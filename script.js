@@ -4,7 +4,7 @@
    Full SPA: markdown rendering, sidebar navigation, search,
    theme toggling, progress tracking, bookmarks, hash routing,
    table of contents, reading progress, stats modal.
-   © 2024 Gaurav Patil — GoForge Platform. All Rights Reserved.
+   © 2026 Gaurav Patil — GoForge Platform. All Rights Reserved.
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── PLATFORM CONFIG ─────────────────────────────────────────── */
@@ -12,7 +12,7 @@ const PLATFORM = {
   name:      'GoForge',
   tagline:   'Forge Your Go Mastery',
   version:   '2.0',
-  copyright: '© 2024 Gaurav Patil — GoForge Platform. All Rights Reserved.',
+  copyright: '© 2026 Gaurav Patil — GoForge Platform. All Rights Reserved.',
 };
 
 /* ── NAVIGATION DATA ─────────────────────────────────────────── */
@@ -494,6 +494,27 @@ async function renderMarkdown(markdown, path) {
     html = `<pre style="white-space:pre-wrap;word-break:break-word;font-family:var(--font-mono);font-size:0.82rem;color:var(--text-secondary)">${escapeHtml(markdown)}</pre>`;
   }
   body.innerHTML = html;
+
+  // Intercept internal .md link clicks — load within SPA instead of navigating away
+  const currentDir = path.includes('/') ? path.substring(0, path.lastIndexOf('/') + 1) : '';
+  body.querySelectorAll('a[href]').forEach(link => {
+    const href = link.getAttribute('href');
+    if (!href || href.startsWith('http') || href.startsWith('//') || href.startsWith('#') || href.startsWith('mailto:')) return;
+    if (!href.endsWith('.md') && !href.includes('.md#')) return;
+    link.setAttribute('target', '');
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      let rel = href.startsWith('./') ? href.slice(2) : href.startsWith('/') ? href.slice(1) : href;
+      const parts = (currentDir + rel).split('/');
+      const out = [];
+      for (const p of parts) {
+        if (p === '..') out.pop();
+        else if (p && p !== '.') out.push(p);
+      }
+      loadTopic(out.join('/'));
+    });
+  });
 
   // Highlight any remaining unhighlighted code blocks
   document.querySelectorAll('#markdown-body pre code:not(.hljs)').forEach(block => {
