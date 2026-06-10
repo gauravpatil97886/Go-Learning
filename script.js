@@ -445,24 +445,35 @@ async function loadTopic(path, pushHistory = true) {
   trackRecent(path);
   updateActiveNav(path);
 
+  const fullUrl = new URL(path, window.location.href).href;
   try {
-    const res = await fetch(path);
+    const res = await fetch(fullUrl, { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const md = await res.text();
+    // If server returned HTML instead of markdown (Jekyll redirect), detect it
+    if (md.trimStart().startsWith('<!DOCTYPE') || md.trimStart().startsWith('<html')) {
+      throw new Error('HTML_RESPONSE');
+    }
     await renderMarkdown(md, path);
   } catch (err) {
-    console.warn('GoForge: failed to load topic:', path, err.message);
+    console.warn('GoForge load failed:', fullUrl, err.message);
     showPanel('error');
     const errEl = document.getElementById('error-message');
-    if (errEl) {
-      if (location.protocol === 'file:') {
-        errEl.innerHTML = `<strong>File protocol restriction:</strong> Browsers block <code>fetch()</code> on <code>file://</code> URLs.<br><br>
-          Run a local server instead:<br>
-          <code>cd /home/choice/Go-Learning && python3 -m http.server 8080</code><br>
-          Then open <a href="http://localhost:8080">http://localhost:8080</a>`;
-      } else {
-        errEl.textContent = `"${path}" could not be loaded. This topic may not exist yet — check back soon!`;
-      }
+    if (!errEl) return;
+    if (location.protocol === 'file:') {
+      errEl.innerHTML = `<strong>Local file detected:</strong> Use a local server.<br>
+        <code>cd Go-Learning && python3 -m http.server 8080</code><br>
+        Then open <a href="http://localhost:8080">http://localhost:8080</a>`;
+    } else if (err.message === 'HTML_RESPONSE') {
+      errEl.innerHTML = `GitHub Pages is still serving an old deployment.<br>
+        <strong>Fix:</strong> Go to your repo <a href="https://github.com/gauravpatil97886/Go-Learning/settings/pages" target="_blank">Settings → Pages</a>
+        and change Source to <strong>GitHub Actions</strong>, then wait 2 minutes.`;
+    } else {
+      errEl.innerHTML = `Failed to load: <code>${path}</code><br>
+        <small>Status: <strong>${err.message}</strong> &nbsp;|&nbsp; URL: <code>${fullUrl}</code></small><br><br>
+        GitHub Pages may still be deploying. Wait 2–3 min and refresh.<br>
+        Or go to <a href="https://github.com/gauravpatil97886/Go-Learning/settings/pages" target="_blank">Settings → Pages</a>
+        and set Source to <strong>GitHub Actions</strong>.`;
     }
   }
 }
