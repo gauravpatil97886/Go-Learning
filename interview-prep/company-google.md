@@ -2,18 +2,16 @@
 
 # Google-Style Go Interview Questions
 
-30 problems. For each: problem statement → Go solution → complexity → "scale this?" discussion → follow-up generalization.
+30 problems. For each: problem statement → complete Go solution → O(n) complexity analysis → "how would you scale this?" → follow-up generalization.
 
-Focus: algorithmic correctness, optimal O(n) solutions, code clarity.
+Google focuses on: clean algorithms, optimal complexity, code clarity, generalization.
 
 ---
 
-## Problem 1: Concurrent Merge Sort
+## Problem 1: Concurrent Merge Sort Using Goroutines
 
 **Problem Statement:**
-Implement merge sort using goroutines. Parallelize the divide step so each recursive half runs concurrently. Handle the threshold below which sequential sort is used.
-
-**Go Solution:**
+Implement merge sort that parallelizes the divide step using goroutines. Use a threshold below which you fall back to sequential sort to avoid goroutine explosion.
 
 ```go
 package main
@@ -23,13 +21,13 @@ import (
 	"sync"
 )
 
-const threshold = 1024
+const threshold = 2048
 
 func mergeSort(arr []int) []int {
 	if len(arr) <= 1 {
 		return arr
 	}
-	if len(arr) <= threshold {
+	if len(arr) < threshold {
 		return sequentialMergeSort(arr)
 	}
 
@@ -79,32 +77,28 @@ func merge(left, right []int) []int {
 }
 
 func main() {
-	arr := []int{5, 2, 8, 1, 9, 3, 7, 4, 6}
+	arr := []int{38, 27, 43, 3, 9, 82, 10}
 	sorted := mergeSort(arr)
-	fmt.Println(sorted)
+	fmt.Println("Sorted:", sorted)
 }
 ```
 
 **Complexity:**
-- Time: O(n log n) — parallelism reduces wall time to O(n) with enough cores
-- Space: O(n log n) — recursive stack + merge buffers
+- Time: O(n log n) — same as sequential but wall-clock time reduced by parallelism
+- Space: O(n log n) due to recursive slice allocations; goroutine stack adds O(log n) overhead
 
-**Scale This?**
-- For arrays >100M elements, distribute partitions across machines using a coordinator-worker pattern (gRPC calls).
-- Use a worker pool bounded by `runtime.NumCPU()` to avoid goroutine explosion.
-- External merge sort for data exceeding RAM: sort chunks on disk, then K-way merge.
+**How would you scale this?**
+For truly large datasets (e.g., sorting 100 GB), distribute chunks across machines using a MapReduce pattern. Each worker node sorts a shard; a coordinator does a k-way merge. Use `io.Pipe` or gRPC streams to avoid loading everything in memory. Cap goroutine depth with a semaphore or worker pool to avoid GOMAXPROCS contention.
 
-**Follow-up Generalization:**
-Can you make it generic over `constraints.Ordered`? Use a comparator function parameter to support custom types.
+**Follow-up:**
+How would you make this generic for any ordered type? Use Go 1.21 `cmp.Ordered` constraint and write `func mergeSort[T cmp.Ordered](arr []T) []T`. How would you sort objects by multiple keys? Accept a `less func(a, b T) bool` comparator instead.
 
 ---
 
-## Problem 2: Goroutine-Safe LRU Cache
+## Problem 2: Goroutine-Safe LRU Cache (Doubly Linked List + Map)
 
 **Problem Statement:**
-Implement an LRU cache with O(1) Get and Put operations that is safe for concurrent access by multiple goroutines.
-
-**Go Solution:**
+Implement an LRU cache with O(1) Get and Put, safe for concurrent access from multiple goroutines.
 
 ```go
 package main
@@ -116,7 +110,8 @@ import (
 )
 
 type entry struct {
-	key, value int
+	key   int
+	value int
 }
 
 type LRUCache struct {
@@ -126,9 +121,9 @@ type LRUCache struct {
 	items map[int]*list.Element
 }
 
-func NewLRUCache(cap int) *LRUCache {
+func NewLRUCache(capacity int) *LRUCache {
 	return &LRUCache{
-		cap:   cap,
+		cap:   capacity,
 		list:  list.New(),
 		items: make(map[int]*list.Element),
 	}
@@ -141,7 +136,7 @@ func (c *LRUCache) Get(key int) (int, bool) {
 		c.list.MoveToFront(el)
 		return el.Value.(*entry).value, true
 	}
-	return -1, false
+	return 0, false
 }
 
 func (c *LRUCache) Put(key, value int) {
@@ -154,8 +149,10 @@ func (c *LRUCache) Put(key, value int) {
 	}
 	if c.list.Len() == c.cap {
 		back := c.list.Back()
-		c.list.Remove(back)
-		delete(c.items, back.Value.(*entry).key)
+		if back != nil {
+			c.list.Remove(back)
+			delete(c.items, back.Value.(*entry).key)
+		}
 	}
 	el := c.list.PushFront(&entry{key, value})
 	c.items[key] = el
@@ -166,35 +163,30 @@ func main() {
 	cache.Put(1, 10)
 	cache.Put(2, 20)
 	cache.Put(3, 30)
-	v, _ := cache.Get(1)
-	fmt.Println(v) // 10
-	cache.Put(4, 40) // evicts key 2
-	_, ok := cache.Get(2)
+	v, ok := cache.Get(1)
+	fmt.Println(v, ok) // 10 true
+	cache.Put(4, 40)   // evicts key 2
+	_, ok = cache.Get(2)
 	fmt.Println(ok) // false
 }
 ```
 
 **Complexity:**
-- Get: O(1) amortized
-- Put: O(1) amortized
+- Time: O(1) amortized for Get and Put
 - Space: O(capacity)
 
-**Scale This?**
-- Shard the cache into N segments (e.g., 256), each with its own mutex. Key → shard by `key % N`.
-- For distributed LRU, use Redis with an LRU eviction policy + a write-through strategy.
-- Implement a TTL layer with a background ticker goroutine that sweeps expired entries.
+**How would you scale this?**
+For a distributed LRU (e.g., caching at Google scale): shard the cache across N nodes using consistent hashing on the key. Each shard is an independent LRU. Use a write-through or write-around strategy to back the cache with a persistent store (Bigtable/Spanner). For read-heavy workloads, replicate hot shards. Add TTL fields to each entry and run a background goroutine to expire stale entries.
 
-**Follow-up Generalization:**
-Extend to LFU (Least Frequently Used). Track a frequency map alongside the doubly-linked list.
+**Follow-up:**
+Implement LFU (Least Frequently Used) instead. LFU requires tracking frequency counts; use two maps — one from key to frequency, one from frequency to a doubly-linked list of keys at that frequency. O(1) Get/Put is still achievable.
 
 ---
 
-## Problem 3: Distributed Rate Limiter
+## Problem 3: Distributed Rate Limiter Design
 
 **Problem Statement:**
-Implement a token bucket rate limiter that can be used across a distributed system. Support per-user limits and atomic operations.
-
-**Go Solution:**
+Implement a token bucket rate limiter that is safe for concurrent use. Then discuss how to extend it to a distributed system.
 
 ```go
 package main
@@ -208,15 +200,15 @@ import (
 type TokenBucket struct {
 	mu         sync.Mutex
 	tokens     float64
-	maxTokens  float64
+	capacity   float64
 	refillRate float64 // tokens per second
 	lastRefill time.Time
 }
 
-func NewTokenBucket(maxTokens, refillRate float64) *TokenBucket {
+func NewTokenBucket(capacity, refillRate float64) *TokenBucket {
 	return &TokenBucket{
-		tokens:     maxTokens,
-		maxTokens:  maxTokens,
+		tokens:     capacity,
+		capacity:   capacity,
 		refillRate: refillRate,
 		lastRefill: time.Now(),
 	}
@@ -228,7 +220,7 @@ func (tb *TokenBucket) Allow() bool {
 
 	now := time.Now()
 	elapsed := now.Sub(tb.lastRefill).Seconds()
-	tb.tokens = min(tb.maxTokens, tb.tokens+elapsed*tb.refillRate)
+	tb.tokens = min(tb.capacity, tb.tokens+elapsed*tb.refillRate)
 	tb.lastRefill = now
 
 	if tb.tokens >= 1.0 {
@@ -245,66 +237,38 @@ func min(a, b float64) float64 {
 	return b
 }
 
-type RateLimiter struct {
-	mu      sync.RWMutex
-	buckets map[string]*TokenBucket
-	max     float64
-	rate    float64
-}
-
-func NewRateLimiter(max, rate float64) *RateLimiter {
-	return &RateLimiter{
-		buckets: make(map[string]*TokenBucket),
-		max:     max,
-		rate:    rate,
-	}
-}
-
-func (rl *RateLimiter) Allow(userID string) bool {
-	rl.mu.RLock()
-	bucket, ok := rl.buckets[userID]
-	rl.mu.RUnlock()
-
-	if !ok {
-		rl.mu.Lock()
-		// Double-check after acquiring write lock
-		if bucket, ok = rl.buckets[userID]; !ok {
-			bucket = NewTokenBucket(rl.max, rl.rate)
-			rl.buckets[userID] = bucket
-		}
-		rl.mu.Unlock()
-	}
-	return bucket.Allow()
-}
-
 func main() {
-	rl := NewRateLimiter(5, 2) // 5 tokens max, refill 2/sec
-	for i := 0; i < 8; i++ {
-		fmt.Printf("Request %d: allowed=%v\n", i+1, rl.Allow("user-1"))
+	limiter := NewTokenBucket(5, 2) // 5 capacity, refill 2/sec
+	allowed, denied := 0, 0
+	for i := 0; i < 10; i++ {
+		if limiter.Allow() {
+			allowed++
+		} else {
+			denied++
+		}
 	}
+	fmt.Printf("Allowed: %d, Denied: %d\n", allowed, denied)
+	time.Sleep(2 * time.Second)
+	fmt.Println("After 2s wait:", limiter.Allow()) // true
 }
 ```
 
 **Complexity:**
-- Allow: O(1) per call
-- Space: O(unique users)
+- Time: O(1) per Allow() call
+- Space: O(1) per rate limiter instance
 
-**Scale This?**
-- Use Redis INCR + EXPIRE for atomic distributed rate limiting across pods.
-- Lua script in Redis ensures atomicity of check-and-decrement.
-- Use sliding window log in Redis ZSET for exact rate limiting.
+**How would you scale this?**
+In a distributed system (e.g., limiting a user across 10 API servers), a local token bucket per server under-counts requests. Use Redis with a Lua script to atomically read-increment-expire a counter per (user, window). Use sliding window log or sliding window counter for accuracy. For extreme scale, use a gossip protocol to propagate usage estimates across nodes, accepting slight over-admission in exchange for no central bottleneck.
 
-**Follow-up Generalization:**
-Implement sliding window counter using a circular buffer. Compare token bucket vs. leaky bucket vs. sliding window.
+**Follow-up:**
+Implement a sliding window rate limiter. Store timestamps of recent requests in a deque; on each request, evict timestamps older than the window, then check if the count is below the limit. Time: O(requests in window); Space: O(limit).
 
 ---
 
-## Problem 4: Concurrent Word Frequency on 1TB File
+## Problem 4: Word Frequency Counter for 1TB File Using Goroutines
 
 **Problem Statement:**
-Count word frequencies in a 1TB file. Use goroutines to parallelize chunk reading and counting. Merge partial results efficiently.
-
-**Go Solution:**
+Count word frequencies in a very large file. Read in parallel chunks; merge results with a final reduce step.
 
 ```go
 package main
@@ -317,102 +281,112 @@ import (
 	"sync"
 )
 
-func countChunk(chunk []string) map[string]int {
-	freq := make(map[string]int)
-	for _, line := range chunk {
+type FreqMap map[string]int
+
+func countChunk(lines []string) FreqMap {
+	freq := make(FreqMap)
+	for _, line := range lines {
 		for _, word := range strings.Fields(line) {
-			freq[strings.ToLower(word)]++
+			word = strings.ToLower(strings.Trim(word, ".,!?\"';:"))
+			if word != "" {
+				freq[word]++
+			}
 		}
 	}
 	return freq
 }
 
-func mergeFreq(dst, src map[string]int) {
-	for k, v := range src {
-		dst[k] += v
+func mergeFreqs(maps []FreqMap) FreqMap {
+	result := make(FreqMap)
+	for _, m := range maps {
+		for k, v := range m {
+			result[k] += v
+		}
 	}
+	return result
 }
 
-func wordFrequency(filename string, workers int) (map[string]int, error) {
+func wordFrequency(filename string, workers int) (FreqMap, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 
-	chunkCh := make(chan []string, workers)
-	resultCh := make(chan map[string]int, workers)
+	lineCh := make(chan []string, workers)
+	resultCh := make(chan FreqMap, workers)
 	var wg sync.WaitGroup
 
-	// Start workers
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for chunk := range chunkCh {
+			for chunk := range lineCh {
 				resultCh <- countChunk(chunk)
 			}
 		}()
 	}
 
-	// Close resultCh when all workers are done
 	go func() {
 		wg.Wait()
 		close(resultCh)
 	}()
 
-	// Read file and send chunks
-	go func() {
-		scanner := bufio.NewScanner(f)
-		chunk := make([]string, 0, 1000)
-		for scanner.Scan() {
-			chunk = append(chunk, scanner.Text())
-			if len(chunk) == 1000 {
-				chunkCh <- chunk
-				chunk = make([]string, 0, 1000)
-			}
+	const chunkSize = 10000
+	scanner := bufio.NewScanner(f)
+	chunk := make([]string, 0, chunkSize)
+	for scanner.Scan() {
+		chunk = append(chunk, scanner.Text())
+		if len(chunk) == chunkSize {
+			lineCh <- chunk
+			chunk = make([]string, 0, chunkSize)
 		}
-		if len(chunk) > 0 {
-			chunkCh <- chunk
-		}
-		close(chunkCh)
-	}()
-
-	// Merge results
-	final := make(map[string]int)
-	for partial := range resultCh {
-		mergeFreq(final, partial)
 	}
-	return final, nil
+	if len(chunk) > 0 {
+		lineCh <- chunk
+	}
+	close(lineCh)
+
+	var partials []FreqMap
+	for m := range resultCh {
+		partials = append(partials, m)
+	}
+	return mergeFreqs(partials), scanner.Err()
 }
 
 func main() {
-	// Demo with stdin simulation
-	freq := countChunk([]string{"hello world", "hello go", "world go go"})
-	fmt.Println(freq)
+	// For demo, write a small temp file
+	f, _ := os.CreateTemp("", "words*.txt")
+	f.WriteString("go is great\ngo is fast\nfast code in go\n")
+	f.Close()
+	freq, err := wordFrequency(f.Name(), 4)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	for w, c := range freq {
+		fmt.Printf("%s: %d\n", w, c)
+	}
+	os.Remove(f.Name())
 }
 ```
 
 **Complexity:**
-- Time: O(N/W) wall time with W workers, O(N) total work
-- Space: O(V) where V = vocabulary size
+- Time: O(N/W) wall-clock where N = total words, W = worker count
+- Space: O(U) where U = unique word count per chunk * workers
 
-**Scale This?**
-- MapReduce pattern: mappers emit (word, 1), reducers sum per partition key.
-- Use mmap for zero-copy file reading on a single machine.
-- Distribute across machines: hash partitioning by word ensures each word goes to exactly one reducer.
+**How would you scale this?**
+For a true 1 TB file: use MapReduce (or Beam/Dataflow). Split the file into 128 MB HDFS/GCS blocks. Each mapper emits (word, 1) pairs; a combiner locally aggregates; reducers merge by hash-partitioning on word. For streaming ingestion (log files), use Kafka + Flink with tumbling windows. The Go solution maps to the mapper phase exactly.
 
-**Follow-up Generalization:**
-Top-K most frequent words using a min-heap of size K, streamed in O(N log K).
+**Follow-up:**
+Find the top-K most frequent words efficiently. Use a min-heap of size K across all partial results. After merging, heap operations are O(U log K). How would you handle Unicode words? Use `unicode.IsLetter` for tokenization and `golang.org/x/text/unicode/norm` for normalization.
 
 ---
 
-## Problem 5: Pub-Sub with Backpressure
+## Problem 5: Pub-Sub with Backpressure Using Buffered Channels
 
 **Problem Statement:**
-Implement a publish-subscribe system where publishers send messages to topics and subscribers receive them. Handle slow subscribers with backpressure (drop or block).
-
-**Go Solution:**
+Build a publish-subscribe system where slow subscribers do not block the publisher. Implement backpressure by dropping or queuing messages.
 
 ```go
 package main
@@ -429,7 +403,7 @@ type Message struct {
 }
 
 type Subscriber struct {
-	id   string
+	id   int
 	ch   chan Message
 	done chan struct{}
 }
@@ -437,29 +411,27 @@ type Subscriber struct {
 type PubSub struct {
 	mu          sync.RWMutex
 	subscribers map[string][]*Subscriber
-	bufSize     int
 }
 
-func NewPubSub(bufSize int) *PubSub {
+func NewPubSub() *PubSub {
 	return &PubSub{
 		subscribers: make(map[string][]*Subscriber),
-		bufSize:     bufSize,
 	}
 }
 
-func (ps *PubSub) Subscribe(topic, id string) *Subscriber {
+func (ps *PubSub) Subscribe(topic string, bufSize int) *Subscriber {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	sub := &Subscriber{
-		id:   id,
-		ch:   make(chan Message, ps.bufSize),
+		id:   len(ps.subscribers[topic]),
+		ch:   make(chan Message, bufSize),
 		done: make(chan struct{}),
 	}
-	ps.mu.Lock()
 	ps.subscribers[topic] = append(ps.subscribers[topic], sub)
-	ps.mu.Unlock()
 	return sub
 }
 
-func (ps *PubSub) Publish(msg Message) {
+func (ps *PubSub) Publish(msg Message) (delivered, dropped int) {
 	ps.mu.RLock()
 	subs := ps.subscribers[msg.Topic]
 	ps.mu.RUnlock()
@@ -467,74 +439,76 @@ func (ps *PubSub) Publish(msg Message) {
 	for _, sub := range subs {
 		select {
 		case sub.ch <- msg:
-		case <-sub.done:
-			// subscriber unsubscribed
+			delivered++
 		default:
 			// backpressure: drop message for slow subscriber
-			fmt.Printf("dropping message for slow subscriber %s\n", sub.id)
+			dropped++
 		}
 	}
+	return
 }
 
-func (ps *PubSub) Unsubscribe(topic, id string) {
+func (ps *PubSub) Unsubscribe(topic string, sub *Subscriber) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	close(sub.done)
 	subs := ps.subscribers[topic]
-	for i, sub := range subs {
-		if sub.id == id {
-			close(sub.done)
+	for i, s := range subs {
+		if s == sub {
 			ps.subscribers[topic] = append(subs[:i], subs[i+1:]...)
-			return
+			break
 		}
 	}
 }
 
 func main() {
-	ps := NewPubSub(10)
-	sub := ps.Subscribe("events", "sub-1")
+	ps := NewPubSub()
+	sub1 := ps.Subscribe("events", 5)
+	sub2 := ps.Subscribe("events", 2) // smaller buffer, will drop under load
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
-		for msg := range sub.ch {
-			fmt.Println("received:", msg.Payload)
-			time.Sleep(10 * time.Millisecond)
+		defer wg.Done()
+		for i := 0; i < 10; i++ {
+			d, dr := ps.Publish(Message{Topic: "events", Payload: i})
+			fmt.Printf("Message %d: delivered=%d dropped=%d\n", i, d, dr)
 		}
 	}()
+	wg.Wait()
 
-	for i := 0; i < 5; i++ {
-		ps.Publish(Message{Topic: "events", Payload: i})
+	// Drain sub1
+	close(sub1.ch)
+	for msg := range sub1.ch {
+		fmt.Println("sub1 received:", msg.Payload)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+	_ = sub2
 }
 ```
 
 **Complexity:**
-- Publish: O(S) where S = number of subscribers per topic
+- Publish: O(S) where S = subscriber count per topic
 - Subscribe/Unsubscribe: O(S)
+- Space: O(S * bufSize)
 
-**Scale This?**
-- Persistent topics with Kafka: partition by key, consumers in consumer groups.
-- Implement a blocking backpressure mode with a configurable timeout.
-- Use fan-out goroutines per subscriber to avoid blocking the publisher.
+**How would you scale this?**
+Replace in-process channels with a distributed message broker (Kafka, Pub/Sub, NATS). For backpressure at scale: Kafka uses consumer group lag monitoring; if a consumer falls behind, auto-scale its replicas or shed load via rate limiting at the producer. Use exponential backoff and dead-letter queues for messages that consistently fail delivery.
 
-**Follow-up Generalization:**
-Add wildcard topic matching (e.g., `events.*`). Implement at-least-once delivery with ACK tracking.
+**Follow-up:**
+Implement topic wildcards (e.g., `events.*` matches `events.click` and `events.hover`). Use a trie to match subscriptions. How would you guarantee at-least-once delivery? Persist messages to WAL before broadcasting; subscribers ACK; re-send unACKed messages on reconnect.
 
 ---
 
-## Problem 6: Trie in Go
+## Problem 6: Trie Implementation in Go
 
 **Problem Statement:**
-Implement a Trie (prefix tree) supporting Insert, Search, and StartsWith operations. Make it thread-safe.
-
-**Go Solution:**
+Implement a Trie supporting Insert, Search, and StartsWith. Used for autocomplete, spell check, and IP routing.
 
 ```go
 package main
 
-import (
-	"fmt"
-	"sync"
-)
+import "fmt"
 
 type TrieNode struct {
 	children [26]*TrieNode
@@ -543,7 +517,6 @@ type TrieNode struct {
 
 type Trie struct {
 	root *TrieNode
-	mu   sync.RWMutex
 }
 
 func NewTrie() *Trie {
@@ -551,8 +524,6 @@ func NewTrie() *Trie {
 }
 
 func (t *Trie) Insert(word string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	node := t.root
 	for _, ch := range word {
 		idx := ch - 'a'
@@ -565,8 +536,6 @@ func (t *Trie) Insert(word string) {
 }
 
 func (t *Trie) Search(word string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
 	node := t.root
 	for _, ch := range word {
 		idx := ch - 'a'
@@ -579,8 +548,6 @@ func (t *Trie) Search(word string) bool {
 }
 
 func (t *Trie) StartsWith(prefix string) bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
 	node := t.root
 	for _, ch := range prefix {
 		idx := ch - 'a'
@@ -593,8 +560,6 @@ func (t *Trie) StartsWith(prefix string) bool {
 }
 
 func (t *Trie) AutoComplete(prefix string) []string {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
 	node := t.root
 	for _, ch := range prefix {
 		idx := ch - 'a'
@@ -604,52 +569,50 @@ func (t *Trie) AutoComplete(prefix string) []string {
 		node = node.children[idx]
 	}
 	var results []string
-	var dfs func(n *TrieNode, path string)
-	dfs = func(n *TrieNode, path string) {
+	var dfs func(n *TrieNode, current string)
+	dfs = func(n *TrieNode, current string) {
 		if n.isEnd {
-			results = append(results, prefix+path)
+			results = append(results, current)
 		}
 		for i, child := range n.children {
 			if child != nil {
-				dfs(child, path+string(rune('a'+i)))
+				dfs(child, current+string(rune('a'+i)))
 			}
 		}
 	}
-	dfs(node, "")
+	dfs(node, prefix)
 	return results
 }
 
 func main() {
-	trie := NewTrie()
-	trie.Insert("apple")
-	trie.Insert("app")
-	trie.Insert("application")
-	fmt.Println(trie.Search("app"))       // true
-	fmt.Println(trie.StartsWith("appl"))  // true
-	fmt.Println(trie.AutoComplete("app")) // [app apple application]
+	t := NewTrie()
+	words := []string{"apple", "app", "application", "apply", "banana"}
+	for _, w := range words {
+		t.Insert(w)
+	}
+	fmt.Println(t.Search("app"))         // true
+	fmt.Println(t.Search("ap"))          // false
+	fmt.Println(t.StartsWith("app"))     // true
+	fmt.Println(t.AutoComplete("app"))   // [app apple application apply]
 }
 ```
 
 **Complexity:**
 - Insert/Search/StartsWith: O(L) where L = word length
-- Space: O(A * N * L) where A=alphabet size, N=words
+- Space: O(ALPHABET * N * L) worst case; in practice much less with shared prefixes
 
-**Scale This?**
-- Compressed Trie (Radix Tree) reduces node count for sparse tries.
-- Serialize trie to disk using prefix-coded sorted array (like Lucene FST).
-- Distribute trie by first letter or hash prefix across shards.
+**How would you scale this?**
+For a search engine autocomplete serving millions of queries/sec: serialize the trie to a compact byte array (DAWG/DAFSA). Store in Redis as a hash of prefix → top-K completions. Pre-compute top-K completions per node offline and cache them. For Unicode support, replace `[26]` with a `map[rune]*TrieNode`. For multi-language, add a language discriminator in the key.
 
-**Follow-up Generalization:**
-Implement a Trie with delete. Support Unicode (map[rune]*TrieNode instead of fixed [26]).
+**Follow-up:**
+Add Delete operation: traverse the word, unmark `isEnd`, then walk back and prune nodes with no children and `isEnd == false`. How would you add ranked autocomplete? Store a weight/frequency at each end node; during DFS, collect (word, weight) pairs and return top-K by weight using a min-heap.
 
 ---
 
-## Problem 7: Graph BFS/DFS with Goroutines
+## Problem 7: Graph BFS with Concurrent Level Processing
 
 **Problem Statement:**
-Implement BFS and DFS on a directed graph. Parallelize BFS level expansion using goroutines. Detect cycles in DFS.
-
-**Go Solution:**
+Perform BFS on a graph where all nodes at the same level are processed concurrently using goroutines.
 
 ```go
 package main
@@ -669,112 +632,73 @@ func NewGraph() *Graph {
 
 func (g *Graph) AddEdge(u, v int) {
 	g.adj[u] = append(g.adj[u], v)
+	g.adj[v] = append(g.adj[v], u)
 }
 
-// Concurrent BFS - processes each level in parallel
-func (g *Graph) BFS(start int) []int {
+func (g *Graph) ConcurrentBFS(start int) [][]int {
 	visited := sync.Map{}
 	visited.Store(start, true)
-	level := []int{start}
-	var order []int
 
-	for len(level) > 0 {
-		order = append(order, level...)
+	currentLevel := []int{start}
+	var levels [][]int
+
+	for len(currentLevel) > 0 {
+		levels = append(levels, append([]int{}, currentLevel...))
+
 		var mu sync.Mutex
 		var nextLevel []int
 		var wg sync.WaitGroup
 
-		for _, node := range level {
-			node := node
+		for _, node := range currentLevel {
 			wg.Add(1)
-			go func() {
+			go func(n int) {
 				defer wg.Done()
-				for _, neighbor := range g.adj[node] {
+				var localNext []int
+				for _, neighbor := range g.adj[n] {
 					if _, loaded := visited.LoadOrStore(neighbor, true); !loaded {
-						mu.Lock()
-						nextLevel = append(nextLevel, neighbor)
-						mu.Unlock()
+						localNext = append(localNext, neighbor)
 					}
 				}
-			}()
+				mu.Lock()
+				nextLevel = append(nextLevel, localNext...)
+				mu.Unlock()
+			}(node)
 		}
 		wg.Wait()
-		level = nextLevel
+		currentLevel = nextLevel
 	}
-	return order
-}
-
-// DFS with cycle detection
-func (g *Graph) HasCycle() bool {
-	visited := make(map[int]bool)
-	inStack := make(map[int]bool)
-
-	var dfs func(node int) bool
-	dfs = func(node int) bool {
-		visited[node] = true
-		inStack[node] = true
-		for _, neighbor := range g.adj[node] {
-			if !visited[neighbor] {
-				if dfs(neighbor) {
-					return true
-				}
-			} else if inStack[neighbor] {
-				return true
-			}
-		}
-		inStack[node] = false
-		return false
-	}
-
-	for node := range g.adj {
-		if !visited[node] {
-			if dfs(node) {
-				return true
-			}
-		}
-	}
-	return false
+	return levels
 }
 
 func main() {
 	g := NewGraph()
-	g.AddEdge(0, 1)
-	g.AddEdge(0, 2)
-	g.AddEdge(1, 3)
-	g.AddEdge(2, 3)
-	g.AddEdge(3, 4)
-
-	fmt.Println("BFS:", g.BFS(0))
-	fmt.Println("Has cycle:", g.HasCycle())
-
-	g2 := NewGraph()
-	g2.AddEdge(0, 1)
-	g2.AddEdge(1, 2)
-	g2.AddEdge(2, 0)
-	fmt.Println("Has cycle:", g2.HasCycle())
+	edges := [][2]int{{0, 1}, {0, 2}, {1, 3}, {1, 4}, {2, 5}, {2, 6}}
+	for _, e := range edges {
+		g.AddEdge(e[0], e[1])
+	}
+	levels := g.ConcurrentBFS(0)
+	for i, level := range levels {
+		fmt.Printf("Level %d: %v\n", i, level)
+	}
 }
 ```
 
 **Complexity:**
-- BFS: O(V + E) time, concurrent level expansion reduces latency
-- DFS: O(V + E) time
+- Time: O(V + E) total; each level's wall-clock time is O(max_degree) with enough goroutines
+- Space: O(V) for visited map and level slices
 
-**Scale This?**
-- Distributed graph: partition vertices across machines; cross-partition edges need RPC.
-- Use Pregel model (Google): each vertex runs a compute function, messages sent to neighbors.
-- For large sparse graphs, store adjacency list in Redis hashes.
+**How would you scale this?**
+For graphs with billions of nodes (e.g., Google's web graph): use Pregel-style bulk synchronous parallel (BSP) computation. Each vertex maintains state; in each superstep, all vertices process received messages and send new ones. Frameworks: Apache Giraph, Google's Pregel. In Go, model each vertex as a goroutine communicating over channels, with a global barrier between levels using `sync.WaitGroup`.
 
-**Follow-up Generalization:**
-Topological sort using DFS. Shortest path in weighted graph (Dijkstra with a min-heap).
+**Follow-up:**
+Implement bidirectional BFS to find shortest path. Expand from both source and target simultaneously; stop when the frontiers intersect. This reduces search space from O(b^d) to O(b^(d/2)). How would you handle weighted graphs? Replace BFS with Dijkstra's algorithm using a priority queue (`container/heap`).
 
 ---
 
-## Problem 8: Top-K Concurrent Workers
+## Problem 8: Top-K Elements with Concurrent Worker Pipeline
 
 **Problem Statement:**
-Given a stream of tasks with scores, maintain the top-K tasks at any point using concurrent workers submitting results.
-
-**Go Solution:**
+Find top-K largest elements from a large stream using a pipeline of concurrent workers and a min-heap.
 
 ```go
 package main
@@ -784,97 +708,117 @@ import (
 	"fmt"
 	"math/rand"
 	"sync"
-	"time"
 )
 
-type Task struct {
-	ID    int
-	Score int
-}
+// MinHeap of size K
+type MinHeap []int
 
-type MinHeap []Task
-
-func (h MinHeap) Len() int            { return len(h) }
-func (h MinHeap) Less(i, j int) bool  { return h[i].Score < h[j].Score }
-func (h MinHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *MinHeap) Push(x interface{}) { *h = append(*h, x.(Task)) }
+func (h MinHeap) Len() int           { return len(h) }
+func (h MinHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h MinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *MinHeap) Push(x interface{}) { *h = append(*h, x.(int)) }
 func (h *MinHeap) Pop() interface{} {
 	old := *h
-	x := old[len(old)-1]
-	*h = old[:len(old)-1]
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
 	return x
 }
 
-type TopKCollector struct {
-	mu   sync.Mutex
-	h    *MinHeap
-	k    int
+func topKWorker(in <-chan []int, k int) <-chan []int {
+	out := make(chan []int)
+	go func() {
+		defer close(out)
+		h := &MinHeap{}
+		heap.Init(h)
+		for chunk := range in {
+			for _, v := range chunk {
+				if h.Len() < k {
+					heap.Push(h, v)
+				} else if v > (*h)[0] {
+					heap.Pop(h)
+					heap.Push(h, v)
+				}
+			}
+		}
+		out <- []int(*h)
+	}()
+	return out
 }
 
-func NewTopKCollector(k int) *TopKCollector {
+func mergeTopK(results [][]int, k int) []int {
 	h := &MinHeap{}
 	heap.Init(h)
-	return &TopKCollector{h: h, k: k}
-}
-
-func (c *TopKCollector) Submit(t Task) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.h.Len() < c.k {
-		heap.Push(c.h, t)
-	} else if (*c.h)[0].Score < t.Score {
-		heap.Pop(c.h)
-		heap.Push(c.h, t)
+	for _, partial := range results {
+		for _, v := range partial {
+			if h.Len() < k {
+				heap.Push(h, v)
+			} else if v > (*h)[0] {
+				heap.Pop(h)
+				heap.Push(h, v)
+			}
+		}
 	}
+	return []int(*h)
 }
 
-func (c *TopKCollector) TopK() []Task {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	result := make([]Task, len(*c.h))
-	copy(result, *c.h)
-	return result
+func topKConcurrent(data []int, k, workers int) []int {
+	chunkSize := (len(data) + workers - 1) / workers
+	inCh := make(chan []int, workers)
+
+	var outChs []<-chan []int
+	for i := 0; i < workers; i++ {
+		outChs = append(outChs, topKWorker(inCh, k))
+	}
+
+	for i := 0; i < len(data); i += chunkSize {
+		end := i + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		inCh <- data[i:end]
+	}
+	close(inCh)
+
+	var wg sync.WaitGroup
+	partials := make([][]int, workers)
+	for i, ch := range outChs {
+		wg.Add(1)
+		go func(idx int, c <-chan []int) {
+			defer wg.Done()
+			partials[idx] = <-c
+		}(i, ch)
+	}
+	wg.Wait()
+	return mergeTopK(partials, k)
 }
 
 func main() {
-	collector := NewTopKCollector(3)
-	var wg sync.WaitGroup
-
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
-			collector.Submit(Task{ID: id, Score: rand.Intn(100)})
-		}(i)
+	data := make([]int, 1000)
+	for i := range data {
+		data[i] = rand.Intn(10000)
 	}
-
-	wg.Wait()
-	fmt.Println("Top 3 tasks:", collector.TopK())
+	top5 := topKConcurrent(data, 5, 4)
+	fmt.Println("Top-5 elements:", top5)
 }
 ```
 
 **Complexity:**
-- Submit: O(log K)
-- TopK: O(K)
-- Space: O(K)
+- Time: O((N/W) log K) per worker, O(W*K log K) merge — overall O(N log K / W)
+- Space: O(K * W) for partial heaps
 
-**Scale This?**
-- Parallel top-K: each worker maintains local top-K, merge at end with O(W*K log W*K).
-- For streaming: use Count-Min Sketch for approximate top-K with O(1) updates.
-- Distributed: each shard returns top-K, coordinator merges K shards → O(K log K).
+**How would you scale this?**
+For a streaming pipeline (e.g., finding top-K trending searches): use a sliding window heap updated via Kafka consumers. Each partition maintains its own min-heap; a coordinator merges every T seconds. For exact top-K with guaranteed accuracy, use the Count-Min Sketch + heap combination. Space-efficient approximation is O(K log(1/delta) / epsilon^2).
 
-**Follow-up Generalization:**
-Median of stream using two heaps (max-heap + min-heap). Percentile tracking with reservoir sampling.
+**Follow-up:**
+Find the K-th largest element in O(N) average time using Quickselect (partition-based). Quickselect avoids sorting the entire array — partition around a pivot, recurse only into the relevant half.
 
 ---
 
 ## Problem 9: Sliding Window Maximum
 
 **Problem Statement:**
-Find the maximum value in every sliding window of size K as it moves across an array.
-
-**Go Solution:**
+Given an array and window size K, return the maximum of each sliding window in O(n) time using a monotonic deque.
 
 ```go
 package main
@@ -885,20 +829,23 @@ func slidingWindowMax(nums []int, k int) []int {
 	if len(nums) == 0 || k == 0 {
 		return nil
 	}
-	// Deque stores indices; front is always the max
+
+	// deque stores indices; front always has the index of the max for current window
 	deque := make([]int, 0, k)
 	result := make([]int, 0, len(nums)-k+1)
 
-	for i, val := range nums {
-		// Remove indices outside window
+	for i, v := range nums {
+		// Remove indices outside current window
 		for len(deque) > 0 && deque[0] < i-k+1 {
 			deque = deque[1:]
 		}
-		// Remove smaller elements from back
-		for len(deque) > 0 && nums[deque[len(deque)-1]] < val {
+		// Remove indices whose values are less than current (monotonic decreasing)
+		for len(deque) > 0 && nums[deque[len(deque)-1]] < v {
 			deque = deque[:len(deque)-1]
 		}
 		deque = append(deque, i)
+
+		// Window is fully formed
 		if i >= k-1 {
 			result = append(result, nums[deque[0]])
 		}
@@ -906,38 +853,29 @@ func slidingWindowMax(nums []int, k int) []int {
 	return result
 }
 
-// Concurrent version for multiple windows in parallel
-func slidingWindowMaxConcurrent(nums []int, k int, workers int) []int {
-	result := slidingWindowMax(nums, k)
-	return result
-}
-
 func main() {
 	nums := []int{1, 3, -1, -3, 5, 3, 6, 7}
-	fmt.Println(slidingWindowMax(nums, 3)) // [3 3 5 5 6 7]
+	k := 3
+	fmt.Println(slidingWindowMax(nums, k)) // [3 3 5 5 6 7]
 }
 ```
 
 **Complexity:**
-- Time: O(n) — each element pushed/popped at most once
-- Space: O(k)
+- Time: O(n) — each element is added and removed from the deque at most once
+- Space: O(K) for the deque
 
-**Scale This?**
-- For streaming data, the deque approach extends naturally; maintain a deque per window.
-- For time-series data, use segment trees or sparse tables for range max queries in O(1).
-- Parallel: split array into W segments with k-1 overlap, process concurrently.
+**How would you scale this?**
+For real-time sliding window max over an event stream (e.g., monitoring CPU spikes): use a segment tree or sparse table for static arrays (O(1) query, O(n log n) build). For dynamic streams, maintain the deque in a ring buffer. In distributed systems, each node maintains a local window; a coordinator aggregates with a hierarchical max over node-level results.
 
-**Follow-up Generalization:**
-Sliding window minimum, sum, average. Apply to stock price analysis (max drawdown).
+**Follow-up:**
+Implement sliding window minimum (identical, just reverse the comparison). How would you solve sliding window median? Use two heaps (max-heap for lower half, min-heap for upper half) with balanced sizes. Sliding window median is O(n log k).
 
 ---
 
-## Problem 10: Two-Sum Concurrent
+## Problem 10: Two-Sum with Concurrent Sharding
 
 **Problem Statement:**
-Find all pairs in a large array that sum to a target. Parallelize using goroutines with a worker pool pattern.
-
-**Go Solution:**
+Find all pairs in an array that sum to a target. Parallelize by sharding the array across workers; each worker searches its shard against a shared lookup map.
 
 ```go
 package main
@@ -947,183 +885,81 @@ import (
 	"sync"
 )
 
-type Pair struct{ i, j int }
+type Pair struct{ A, B int }
 
 func twoSumConcurrent(nums []int, target int, workers int) []Pair {
-	n := len(nums)
-	complement := make(map[int][]int)
+	// Build lookup: value -> list of indices
+	lookup := make(map[int][]int)
 	for i, v := range nums {
-		complement[v] = append(complement[v], i)
+		lookup[v] = append(lookup[v], i)
 	}
 
-	jobs := make(chan int, n)
-	results := make(chan Pair, n)
+	chunkSize := (len(nums) + workers - 1) / workers
+	var mu sync.Mutex
+	var pairs []Pair
+	seen := make(map[Pair]bool)
 	var wg sync.WaitGroup
 
 	for w := 0; w < workers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > len(nums) {
+			end = len(nums)
+		}
 		wg.Add(1)
-		go func() {
+		go func(s, e int) {
 			defer wg.Done()
-			for i := range jobs {
-				need := target - nums[i]
-				for _, j := range complement[need] {
-					if j > i {
-						results <- Pair{i, j}
+			local := []Pair{}
+			for i := s; i < e; i++ {
+				complement := target - nums[i]
+				if indices, ok := lookup[complement]; ok {
+					for _, j := range indices {
+						if j <= i {
+							continue
+						}
+						p := Pair{nums[i], nums[j]}
+						local = append(local, p)
 					}
 				}
 			}
-		}()
+			mu.Lock()
+			for _, p := range local {
+				if !seen[p] {
+					seen[p] = true
+					pairs = append(pairs, p)
+				}
+			}
+			mu.Unlock()
+		}(start, end)
 	}
-
-	for i := 0; i < n; i++ {
-		jobs <- i
-	}
-	close(jobs)
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var pairs []Pair
-	for p := range results {
-		pairs = append(pairs, p)
-	}
+	wg.Wait()
 	return pairs
 }
 
 func main() {
-	nums := []int{2, 7, 11, 15, 1, 8, 3, 6}
-	pairs := twoSumConcurrent(nums, 9, 4)
-	for _, p := range pairs {
-		fmt.Printf("[%d, %d] = %d + %d\n", p.i, p.j, nums[p.i], nums[p.j])
-	}
+	nums := []int{2, 7, 11, 15, -2, 9, 4, 3}
+	target := 9
+	pairs := twoSumConcurrent(nums, target, 4)
+	fmt.Println("Pairs summing to", target, ":", pairs)
 }
 ```
 
 **Complexity:**
-- Time: O(n) build + O(n/W) per worker
-- Space: O(n)
+- Time: O(N/W + output) per worker; O(N) total with W workers
+- Space: O(N) for the lookup map
 
-**Scale This?**
-- For 1B elements, distribute across machines; each node handles a partition and cross-checks with a broadcast table.
-- Use bit-array for seen values when values are bounded integers (O(1) space per element).
+**How would you scale this?**
+For a stream of numbers arriving in real time, maintain a concurrent hash map with fine-grained sharding (e.g., N shards, each with its own RWMutex). On each new element, look up the complement in the map. This achieves O(1) per insertion and O(1) per query. For distributed two-sum (numbers spread across machines), broadcast each number to a coordinator that holds the complementary half, or use a distributed hash join.
 
-**Follow-up Generalization:**
-Three-sum, four-sum. Two-sum in a sorted array using two pointers O(n) without a hash map.
+**Follow-up:**
+Generalize to 3-Sum: fix one element, run two-sum on the rest. O(N^2) time. Can you parallelize the outer loop? Yes — each goroutine handles a different fixed element. Reduce false sharing by ensuring goroutines write to separate result slices.
 
 ---
 
 ## Problem 11: Job Scheduler with DAG Dependencies
 
 **Problem Statement:**
-Implement a job scheduler where jobs have dependencies (DAG). Execute jobs concurrently when their dependencies are satisfied.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"fmt"
-	"sync"
-)
-
-type Job struct {
-	ID   string
-	Deps []string
-	Run  func()
-}
-
-type Scheduler struct {
-	jobs    map[string]*Job
-	inDeg   map[string]int
-	waiters map[string][]string
-}
-
-func NewScheduler() *Scheduler {
-	return &Scheduler{
-		jobs:    make(map[string]*Job),
-		inDeg:   make(map[string]int),
-		waiters: make(map[string][]string),
-	}
-}
-
-func (s *Scheduler) AddJob(job *Job) {
-	s.jobs[job.ID] = job
-	s.inDeg[job.ID] = len(job.Deps)
-	for _, dep := range job.Deps {
-		s.waiters[dep] = append(s.waiters[dep], job.ID)
-	}
-}
-
-func (s *Scheduler) Run() {
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	ready := make(chan string, len(s.jobs))
-
-	// Enqueue jobs with no dependencies
-	for id, deg := range s.inDeg {
-		if deg == 0 {
-			ready <- id
-		}
-	}
-
-	completed := 0
-	total := len(s.jobs)
-
-	for completed < total {
-		select {
-		case id := <-ready:
-			wg.Add(1)
-			go func(jobID string) {
-				defer wg.Done()
-				s.jobs[jobID].Run()
-				mu.Lock()
-				for _, waiter := range s.waiters[jobID] {
-					s.inDeg[waiter]--
-					if s.inDeg[waiter] == 0 {
-						ready <- waiter
-					}
-				}
-				mu.Unlock()
-			}(id)
-			completed++
-		}
-	}
-	wg.Wait()
-}
-
-func main() {
-	s := NewScheduler()
-	s.AddJob(&Job{ID: "A", Deps: nil, Run: func() { fmt.Println("Running A") }})
-	s.AddJob(&Job{ID: "B", Deps: []string{"A"}, Run: func() { fmt.Println("Running B") }})
-	s.AddJob(&Job{ID: "C", Deps: []string{"A"}, Run: func() { fmt.Println("Running C") }})
-	s.AddJob(&Job{ID: "D", Deps: []string{"B", "C"}, Run: func() { fmt.Println("Running D") }})
-	s.Run()
-}
-```
-
-**Complexity:**
-- Time: O(V + E) — Kahn's algorithm variant
-- Space: O(V + E)
-
-**Scale This?**
-- Workflow engines: Apache Airflow, Argo Workflows use this pattern.
-- Store job state in a distributed KV store; use leader election for the scheduler.
-- Add retry with exponential backoff per job; dead-letter queue for permanently failed jobs.
-
-**Follow-up Generalization:**
-Add job priorities. Implement a critical path calculation (longest path in DAG = minimum completion time).
-
----
-
-## Problem 12: Load Balancer
-
-**Problem Statement:**
-Implement a load balancer supporting round-robin, least-connections, and weighted routing strategies.
-
-**Go Solution:**
+Given jobs with dependencies (DAG), schedule and execute them respecting order. Use goroutines for parallelism; topological sort to determine execution order.
 
 ```go
 package main
@@ -1134,228 +970,223 @@ import (
 	"sync/atomic"
 )
 
-type Backend struct {
-	Address     string
-	Weight      int
-	Connections int64
-	Healthy     bool
+type Job struct {
+	ID   int
+	Name string
+	Run  func()
 }
 
-type LoadBalancer struct {
-	backends []*Backend
-	mu       sync.RWMutex
-	counter  uint64
+type Scheduler struct {
+	jobs    map[int]*Job
+	deps    map[int][]int // job -> its dependencies
+	rdeps   map[int][]int // job -> jobs that depend on it
+	inDeg   map[int]int32
 }
 
-func NewLoadBalancer(backends []*Backend) *LoadBalancer {
-	return &LoadBalancer{backends: backends}
+func NewScheduler() *Scheduler {
+	return &Scheduler{
+		jobs:  make(map[int]*Job),
+		deps:  make(map[int][]int),
+		rdeps: make(map[int][]int),
+		inDeg: make(map[int]int32),
+	}
 }
 
-func (lb *LoadBalancer) RoundRobin() *Backend {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
-	n := uint64(len(lb.backends))
-	for i := uint64(0); i < n; i++ {
-		idx := atomic.AddUint64(&lb.counter, 1) % n
-		if lb.backends[idx].Healthy {
-			return lb.backends[idx]
+func (s *Scheduler) AddJob(job *Job) {
+	s.jobs[job.ID] = job
+	if _, ok := s.inDeg[job.ID]; !ok {
+		s.inDeg[job.ID] = 0
+	}
+}
+
+func (s *Scheduler) AddDep(jobID, depID int) {
+	s.deps[jobID] = append(s.deps[jobID], depID)
+	s.rdeps[depID] = append(s.rdeps[depID], jobID)
+	s.inDeg[jobID]++
+}
+
+func (s *Scheduler) Run() {
+	var wg sync.WaitGroup
+	ready := make(chan int, len(s.jobs))
+	inDeg := make(map[int]*int32)
+	for id, deg := range s.inDeg {
+		v := deg
+		inDeg[id] = &v
+		if deg == 0 {
+			ready <- id
 		}
 	}
-	return nil
-}
 
-func (lb *LoadBalancer) LeastConnections() *Backend {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
-	var best *Backend
-	for _, b := range lb.backends {
-		if b.Healthy {
-			if best == nil || atomic.LoadInt64(&b.Connections) < atomic.LoadInt64(&best.Connections) {
-				best = b
+	var mu sync.Mutex
+	remaining := int32(len(s.jobs))
+
+	var process func(id int)
+	process = func(id int) {
+		defer wg.Done()
+		s.jobs[id].Run()
+		mu.Lock()
+		dependents := s.rdeps[id]
+		mu.Unlock()
+		for _, dep := range dependents {
+			if atomic.AddInt32(inDeg[dep], -1) == 0 {
+				wg.Add(1)
+				ready <- dep
 			}
 		}
+		if atomic.AddInt32(&remaining, -1) == 0 {
+			close(ready)
+		}
 	}
-	if best != nil {
-		atomic.AddInt64(&best.Connections, 1)
-	}
-	return best
-}
 
-func (lb *LoadBalancer) Weighted() *Backend {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
-	total := 0
-	for _, b := range lb.backends {
-		if b.Healthy {
-			total += b.Weight
-		}
+	for id := range ready {
+		wg.Add(1)
+		go process(id)
 	}
-	if total == 0 {
-		return nil
-	}
-	pick := int(atomic.AddUint64(&lb.counter, 1)) % total
-	for _, b := range lb.backends {
-		if b.Healthy {
-			pick -= b.Weight
-			if pick < 0 {
-				return b
-			}
-		}
-	}
-	return nil
+	wg.Wait()
 }
 
 func main() {
-	backends := []*Backend{
-		{Address: "10.0.0.1:8080", Weight: 3, Healthy: true},
-		{Address: "10.0.0.2:8080", Weight: 1, Healthy: true},
-		{Address: "10.0.0.3:8080", Weight: 2, Healthy: true},
+	s := NewScheduler()
+	jobs := []*Job{
+		{1, "A", func() { fmt.Println("Job A done") }},
+		{2, "B", func() { fmt.Println("Job B done") }},
+		{3, "C", func() { fmt.Println("Job C done") }},
+		{4, "D", func() { fmt.Println("Job D done") }},
 	}
-	lb := NewLoadBalancer(backends)
-
-	for i := 0; i < 6; i++ {
-		b := lb.RoundRobin()
-		fmt.Println("RR:", b.Address)
+	for _, j := range jobs {
+		s.AddJob(j)
 	}
-	b := lb.LeastConnections()
-	fmt.Println("LC:", b.Address)
+	s.AddDep(2, 1) // B depends on A
+	s.AddDep(3, 1) // C depends on A
+	s.AddDep(4, 2) // D depends on B
+	s.AddDep(4, 3) // D depends on C
+	s.Run()
 }
 ```
 
 **Complexity:**
-- Round Robin: O(1) amortized
-- Least Connections: O(N) per call
-- Weighted: O(N) per call
+- Time: O(V + E) where V = jobs, E = dependencies (parallel critical path)
+- Space: O(V + E) for adjacency lists and in-degree counters
 
-**Scale This?**
-- Health check goroutine pings backends on a ticker; updates `Healthy` atomically.
-- Consistent hashing for sticky sessions (same client always routed to same backend).
-- L7 load balancer: route based on URL path, headers, or JWT claims.
+**How would you scale this?**
+For distributed job schedulers (Google Borg/Kubernetes): represent the DAG in a persistent store (etcd/Spanner). A central scheduler assigns jobs to worker nodes based on resource availability. Use the actor model (each job is an actor) for distributed execution. Handle failures with job retries and dead-letter queues. For DAGs with millions of nodes, use a streaming topological sort that processes ready jobs as they complete.
 
-**Follow-up Generalization:**
-Implement IP hash routing. Add circuit breaker per backend (open/half-open/closed states).
+**Follow-up:**
+Detect cycles in the dependency graph before execution. Perform DFS; if you encounter a GRAY (in-progress) node, a cycle exists. Return the cycle path. How would you handle job priorities? Use a priority queue for the ready channel, ordered by priority.
 
 ---
 
-## Problem 13: Consistent Hashing
+## Problem 12: Consistent Hashing Ring Implementation
 
 **Problem Statement:**
-Implement consistent hashing with virtual nodes to distribute keys evenly across a dynamic set of servers.
-
-**Go Solution:**
+Implement a consistent hashing ring so that adding/removing nodes minimizes key remapping.
 
 ```go
 package main
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"sort"
 	"sync"
 )
 
-type ConsistentHash struct {
+type Ring struct {
 	mu       sync.RWMutex
-	ring     map[uint32]string
-	sorted   []uint32
 	replicas int
+	keys     []uint32           // sorted virtual node positions
+	ring     map[uint32]string  // position -> node name
 }
 
-func NewConsistentHash(replicas int) *ConsistentHash {
-	return &ConsistentHash{
-		ring:     make(map[uint32]string),
+func NewRing(replicas int) *Ring {
+	return &Ring{
 		replicas: replicas,
+		ring:     make(map[uint32]string),
 	}
 }
 
-func (c *ConsistentHash) hash(key string) uint32 {
-	h := md5.Sum([]byte(key))
+func hashKey(key string) uint32 {
+	h := sha256.Sum256([]byte(key))
 	return binary.BigEndian.Uint32(h[:4])
 }
 
-func (c *ConsistentHash) AddNode(node string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := 0; i < c.replicas; i++ {
-		vnode := fmt.Sprintf("%s#%d", node, i)
-		h := c.hash(vnode)
-		c.ring[h] = node
-		c.sorted = append(c.sorted, h)
+func (r *Ring) AddNode(node string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := 0; i < r.replicas; i++ {
+		h := hashKey(fmt.Sprintf("%s#%d", node, i))
+		r.keys = append(r.keys, h)
+		r.ring[h] = node
 	}
-	sort.Slice(c.sorted, func(i, j int) bool { return c.sorted[i] < c.sorted[j] })
+	sort.Slice(r.keys, func(i, j int) bool { return r.keys[i] < r.keys[j] })
 }
 
-func (c *ConsistentHash) RemoveNode(node string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := 0; i < c.replicas; i++ {
-		vnode := fmt.Sprintf("%s#%d", node, i)
-		h := c.hash(vnode)
-		delete(c.ring, h)
+func (r *Ring) RemoveNode(node string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := 0; i < r.replicas; i++ {
+		h := hashKey(fmt.Sprintf("%s#%d", node, i))
+		delete(r.ring, h)
+		for idx, k := range r.keys {
+			if k == h {
+				r.keys = append(r.keys[:idx], r.keys[idx+1:]...)
+				break
+			}
+		}
 	}
-	// Rebuild sorted slice
-	c.sorted = c.sorted[:0]
-	for h := range c.ring {
-		c.sorted = append(c.sorted, h)
-	}
-	sort.Slice(c.sorted, func(i, j int) bool { return c.sorted[i] < c.sorted[j] })
 }
 
-func (c *ConsistentHash) GetNode(key string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	if len(c.sorted) == 0 {
+func (r *Ring) GetNode(key string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.keys) == 0 {
 		return ""
 	}
-	h := c.hash(key)
-	idx := sort.Search(len(c.sorted), func(i int) bool { return c.sorted[i] >= h })
-	if idx == len(c.sorted) {
+	h := hashKey(key)
+	idx := sort.Search(len(r.keys), func(i int) bool { return r.keys[i] >= h })
+	if idx == len(r.keys) {
 		idx = 0
 	}
-	return c.ring[c.sorted[idx]]
+	return r.ring[r.keys[idx]]
 }
 
 func main() {
-	ch := NewConsistentHash(150)
-	ch.AddNode("server-1")
-	ch.AddNode("server-2")
-	ch.AddNode("server-3")
+	ring := NewRing(150)
+	ring.AddNode("server1")
+	ring.AddNode("server2")
+	ring.AddNode("server3")
 
-	keys := []string{"user:1", "user:2", "user:3", "order:100", "order:200"}
+	keys := []string{"user:1001", "user:2002", "order:555", "product:99"}
 	for _, k := range keys {
-		fmt.Printf("%s -> %s\n", k, ch.GetNode(k))
+		fmt.Printf("%s -> %s\n", k, ring.GetNode(k))
 	}
 
-	fmt.Println("After removing server-2:")
-	ch.RemoveNode("server-2")
+	ring.RemoveNode("server2")
+	fmt.Println("\nAfter removing server2:")
 	for _, k := range keys {
-		fmt.Printf("%s -> %s\n", k, ch.GetNode(k))
+		fmt.Printf("%s -> %s\n", k, ring.GetNode(k))
 	}
 }
 ```
 
 **Complexity:**
-- AddNode/RemoveNode: O(R log R) where R = replicas
-- GetNode: O(log N) binary search
-- Space: O(N * R)
+- AddNode/RemoveNode: O(R log R) where R = total virtual nodes
+- GetNode: O(log R) binary search
+- Space: O(N * replicas)
 
-**Scale This?**
-- Used in Cassandra, DynamoDB for partition assignment.
-- Virtual nodes ensure even distribution even when nodes have different capacities.
-- Replication: for each key, store on the next K nodes clockwise on the ring.
+**How would you scale this?**
+Consistent hashing is foundational to Amazon Dynamo, Cassandra, and Memcached. For production: use 150-200 virtual nodes per physical node to achieve uniform distribution. Integrate with service discovery (etcd/Consul) so the ring updates when nodes join/leave. For replication, GetNode returns the next N nodes clockwise — the replication factor. Handle node failure by redirecting to the next node in the ring (hinted handoff).
 
-**Follow-up Generalization:**
-Rendezvous hashing (HRW) as an alternative. Jump consistent hash for O(1) computation.
+**Follow-up:**
+Implement bounded-load consistent hashing (Google's approach) to prevent hot spots. Each node tracks its load; if the target node exceeds 1+epsilon times the average load, route to the next node in the ring. This bounds the maximum load to O(log N / N) imbalance.
 
 ---
 
-## Problem 14: K-Way Merge with Channels
+## Problem 13: K-Way Merge Using Min-Heap + Channels
 
 **Problem Statement:**
-Merge K sorted streams (channels) into a single sorted output channel using a min-heap.
-
-**Go Solution:**
+Merge K sorted lists (or streams) into one sorted stream using a min-heap with channels for the goroutine pipeline pattern.
 
 ```go
 package main
@@ -1366,77 +1197,56 @@ import (
 )
 
 type Item struct {
-	value    int
-	streamID int
+	val      int
+	listIdx  int
+	elemIdx  int
 }
 
 type ItemHeap []Item
 
 func (h ItemHeap) Len() int            { return len(h) }
-func (h ItemHeap) Less(i, j int) bool  { return h[i].value < h[j].value }
+func (h ItemHeap) Less(i, j int) bool  { return h[i].val < h[j].val }
 func (h ItemHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *ItemHeap) Push(x interface{}) { *h = append(*h, x.(Item)) }
 func (h *ItemHeap) Pop() interface{} {
 	old := *h
-	x := old[len(old)-1]
-	*h = old[:len(old)-1]
+	n := len(old)
+	x := old[n-1]
+	*h = old[:n-1]
 	return x
 }
 
-func kWayMerge(streams []<-chan int) <-chan int {
+func kWayMerge(lists [][]int) <-chan int {
 	out := make(chan int)
-	h := &ItemHeap{}
-	heap.Init(h)
-
-	// Channel wrappers to track closures
-	type streamVal struct {
-		val    int
-		ok     bool
-		stream <-chan int
-		id     int
-	}
-
 	go func() {
 		defer close(out)
-		// Initialize heap with first element from each stream
-		for i, s := range streams {
-			if val, ok := <-s; ok {
-				heap.Push(h, Item{val, i})
+		h := &ItemHeap{}
+		heap.Init(h)
+		for i, list := range lists {
+			if len(list) > 0 {
+				heap.Push(h, Item{list[0], i, 0})
 			}
 		}
-
 		for h.Len() > 0 {
 			item := heap.Pop(h).(Item)
-			out <- item.value
-			// Get next from same stream
-			if val, ok := <-streams[item.streamID]; ok {
-				heap.Push(h, Item{val, item.streamID})
+			out <- item.val
+			next := item.elemIdx + 1
+			if next < len(lists[item.listIdx]) {
+				heap.Push(h, Item{lists[item.listIdx][next], item.listIdx, next})
 			}
 		}
 	}()
-
 	return out
 }
 
-func makeStream(vals []int) <-chan int {
-	ch := make(chan int)
-	go func() {
-		defer close(ch)
-		for _, v := range vals {
-			ch <- v
-		}
-	}()
-	return ch
-}
-
 func main() {
-	streams := []<-chan int{
-		makeStream([]int{1, 4, 7, 10}),
-		makeStream([]int{2, 5, 8, 11}),
-		makeStream([]int{3, 6, 9, 12}),
+	lists := [][]int{
+		{1, 4, 7, 10},
+		{2, 5, 8, 11},
+		{3, 6, 9, 12},
 	}
-	merged := kWayMerge(streams)
-	for v := range merged {
+	ch := kWayMerge(lists)
+	for v := range ch {
 		fmt.Printf("%d ", v)
 	}
 	fmt.Println()
@@ -1444,25 +1254,21 @@ func main() {
 ```
 
 **Complexity:**
-- Time: O(N log K) where N = total elements, K = streams
-- Space: O(K) heap
+- Time: O(N log K) where N = total elements, K = number of lists
+- Space: O(K) for the heap
 
-**Scale This?**
-- External sort: sort chunks in parallel, then K-way merge to produce final sorted file.
-- Streaming merge in ETL pipelines: merge sorted partitions from different data sources.
-- Use `context.Context` for cancellation propagation across all streams.
+**How would you scale this?**
+K-way merge is the core of external sort. For a 1 TB file: split into chunks that fit in RAM, sort each chunk, write to disk. Then K-way merge across K sorted file handles using a min-heap. This is O(N log K) with K = number of sorted runs. In distributed systems (Hadoop MergeSort), each reducer receives sorted partitions from multiple mappers; it K-way merges them. Parallelize the merge by splitting by value range — shard into buckets, sort each bucket independently.
 
-**Follow-up Generalization:**
-K-way merge of struct streams with custom comparator. Merge with deduplication (skip identical values).
+**Follow-up:**
+How would you merge K sorted linked lists? Same approach, but instead of (listIdx, elemIdx), store the current linked list node pointer. Replace array access with node pointer advancement. What if the lists are infinite (from network streams)? Use `chan int` per stream and a heap keyed on the latest value from each stream. Block on the next value only when that stream's current value is popped.
 
 ---
 
-## Problem 15: Concurrent Fibonacci
+## Problem 14: Concurrent Fibonacci with Memoization
 
 **Problem Statement:**
-Compute Fibonacci numbers using memoization with goroutines. Handle concurrent requests for the same value without redundant computation.
-
-**Go Solution:**
+Compute Fibonacci numbers concurrently with memoization, ensuring each value is computed exactly once even under concurrent requests (using singleflight pattern).
 
 ```go
 package main
@@ -1472,229 +1278,78 @@ import (
 	"sync"
 )
 
+type call struct {
+	wg  sync.WaitGroup
+	val int
+}
+
 type FibCache struct {
-	mu    sync.RWMutex
-	cache map[int]int
-	calls map[int]*sync.Once
+	mu    sync.Mutex
+	calls map[int]*call
 }
 
 func NewFibCache() *FibCache {
-	return &FibCache{
-		cache: map[int]int{0: 0, 1: 1},
-		calls: make(map[int]*sync.Once),
-	}
-}
-
-func (fc *FibCache) getOnce(n int) *sync.Once {
-	fc.mu.Lock()
-	defer fc.mu.Unlock()
-	if fc.calls[n] == nil {
-		fc.calls[n] = &sync.Once{}
-	}
-	return fc.calls[n]
+	return &FibCache{calls: make(map[int]*call)}
 }
 
 func (fc *FibCache) Fib(n int) int {
-	fc.mu.RLock()
-	if v, ok := fc.cache[n]; ok {
-		fc.mu.RUnlock()
-		return v
-	}
-	fc.mu.RUnlock()
-
-	fc.getOnce(n).Do(func() {
-		result := fc.Fib(n-1) + fc.Fib(n-2)
-		fc.mu.Lock()
-		fc.cache[n] = result
+	fc.mu.Lock()
+	if c, ok := fc.calls[n]; ok {
 		fc.mu.Unlock()
-	})
+		c.wg.Wait()
+		return c.val
+	}
+	c := &call{}
+	c.wg.Add(1)
+	fc.calls[n] = c
+	fc.mu.Unlock()
 
-	fc.mu.RLock()
-	defer fc.mu.RUnlock()
-	return fc.cache[n]
-}
-
-// Channel-based Fibonacci generator
-func fibGen(n int) <-chan int {
-	ch := make(chan int)
-	go func() {
-		defer close(ch)
-		a, b := 0, 1
-		for i := 0; i <= n; i++ {
-			ch <- a
-			a, b = b, a+b
-		}
-	}()
-	return ch
+	if n <= 1 {
+		c.val = n
+	} else {
+		// Compute both halves; can be parallelized for large n
+		var wg sync.WaitGroup
+		var a, b int
+		wg.Add(2)
+		go func() { defer wg.Done(); a = fc.Fib(n - 1) }()
+		go func() { defer wg.Done(); b = fc.Fib(n - 2) }()
+		wg.Wait()
+		c.val = a + b
+	}
+	c.wg.Done()
+	return c.val
 }
 
 func main() {
 	fc := NewFibCache()
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
+	for _, n := range []int{10, 10, 15, 20, 10, 15} {
 		wg.Add(1)
-		n := 10 + i
-		go func() {
+		go func(n int) {
 			defer wg.Done()
 			fmt.Printf("Fib(%d) = %d\n", n, fc.Fib(n))
-		}()
+		}(n)
 	}
 	wg.Wait()
-
-	fmt.Print("Generator: ")
-	for v := range fibGen(10) {
-		fmt.Printf("%d ", v)
-	}
-	fmt.Println()
 }
 ```
 
 **Complexity:**
-- Memoized: O(n) time, O(n) space
-- Generator: O(1) space per element
+- Time: O(N) unique computations; O(1) for cached lookups
+- Space: O(N) memoization table + O(N) goroutine stack depth (risk of goroutine explosion for large N)
 
-**Scale This?**
-- For very large n, use matrix exponentiation: O(log n).
-- Distribute computation: map fib(n) to a cache cluster keyed by n.
-- `singleflight.Group` from `golang.org/x/sync` is the idiomatic Go solution for deduplicating concurrent calls.
+**How would you scale this?**
+For large N (e.g., N=1,000,000), goroutine-per-subtree causes stack overflow. Use iterative DP instead. For distributed memoization (shared across services): store Fib(n) in Redis. Use the singleflight package (`golang.org/x/sync/singleflight`) to suppress duplicate in-flight requests. The singleflight pattern is used in production for cache stampede prevention.
 
-**Follow-up Generalization:**
-Generalize to arbitrary linear recurrences. Use `singleflight.Group` for idiomatic deduplication.
+**Follow-up:**
+Compute Fib(N) in O(log N) time using matrix exponentiation. The key identity: `[[1,1],[1,0]]^n = [[Fib(n+1), Fib(n)], [Fib(n), Fib(n-1)]]`. Fast matrix exponentiation via repeated squaring gives O(log N) multiplications, each O(1) for 2x2 matrices.
 
 ---
 
-## Problem 16: Real-Time Leaderboard
+## Problem 15: Real-Time Leaderboard with Sorted Set
 
 **Problem Statement:**
-Implement a real-time leaderboard that supports score updates, rank queries, and top-N retrieval efficiently with concurrent updates.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"container/heap"
-	"fmt"
-	"sync"
-)
-
-type Player struct {
-	ID    string
-	Score int
-	index int // heap index
-}
-
-type PlayerHeap []*Player
-
-func (h PlayerHeap) Len() int            { return len(h) }
-func (h PlayerHeap) Less(i, j int) bool  { return h[i].Score > h[j].Score } // max-heap
-func (h PlayerHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].index = i
-	h[j].index = j
-}
-func (h *PlayerHeap) Push(x interface{}) {
-	p := x.(*Player)
-	p.index = len(*h)
-	*h = append(*h, p)
-}
-func (h *PlayerHeap) Pop() interface{} {
-	old := *h
-	p := old[len(old)-1]
-	p.index = -1
-	*h = old[:len(old)-1]
-	return p
-}
-
-type Leaderboard struct {
-	mu      sync.RWMutex
-	h       *PlayerHeap
-	players map[string]*Player
-}
-
-func NewLeaderboard() *Leaderboard {
-	h := &PlayerHeap{}
-	heap.Init(h)
-	return &Leaderboard{
-		h:       h,
-		players: make(map[string]*Player),
-	}
-}
-
-func (lb *Leaderboard) UpdateScore(id string, delta int) {
-	lb.mu.Lock()
-	defer lb.mu.Unlock()
-	if p, ok := lb.players[id]; ok {
-		p.Score += delta
-		heap.Fix(lb.h, p.index)
-	} else {
-		p = &Player{ID: id, Score: delta}
-		lb.players[id] = p
-		heap.Push(lb.h, p)
-	}
-}
-
-func (lb *Leaderboard) TopN(n int) []Player {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
-	result := make([]Player, 0, n)
-	for i := 0; i < n && i < len(*lb.h); i++ {
-		result = append(result, *(*lb.h)[i])
-	}
-	return result
-}
-
-func (lb *Leaderboard) Rank(id string) int {
-	lb.mu.RLock()
-	defer lb.mu.RUnlock()
-	if p, ok := lb.players[id]; ok {
-		return p.index + 1
-	}
-	return -1
-}
-
-func main() {
-	lb := NewLeaderboard()
-	players := []struct{ id string; score int }{
-		{"alice", 100}, {"bob", 200}, {"carol", 150}, {"dave", 300},
-	}
-	var wg sync.WaitGroup
-	for _, p := range players {
-		wg.Add(1)
-		go func(id string, score int) {
-			defer wg.Done()
-			lb.UpdateScore(id, score)
-		}(p.id, p.score)
-	}
-	wg.Wait()
-
-	fmt.Println("Top 3:", lb.TopN(3))
-	fmt.Println("Alice rank:", lb.Rank("alice"))
-}
-```
-
-**Complexity:**
-- UpdateScore: O(log N)
-- TopN: O(N) — could optimize to O(K log K) with a secondary sorted view
-- Rank: O(1)
-
-**Scale This?**
-- Redis ZADD/ZRANK/ZRANGE for distributed leaderboard — O(log N) all operations.
-- Segment leaderboard by time window (daily, weekly, all-time) using multiple sorted sets.
-- Shard by game/region; global leaderboard requires merging shards.
-
-**Follow-up Generalization:**
-Percentile rank: what fraction of players have a lower score? Use order statistics tree.
-
----
-
-## Problem 17: Interval Merging at Scale
-
-**Problem Statement:**
-Given a list of intervals (possibly overlapping), merge all overlapping intervals. Handle concurrent interval additions.
-
-**Go Solution:**
+Implement a leaderboard that supports: UpdateScore, GetRank, GetTopK — all with low latency under concurrent updates.
 
 ```go
 package main
@@ -1705,40 +1360,144 @@ import (
 	"sync"
 )
 
-type Interval struct {
-	Start, End int
+type Player struct {
+	Name  string
+	Score int
 }
+
+type Leaderboard struct {
+	mu      sync.RWMutex
+	scores  map[string]int
+	sorted  []Player
+	dirty   bool
+}
+
+func NewLeaderboard() *Leaderboard {
+	return &Leaderboard{scores: make(map[string]int)}
+}
+
+func (lb *Leaderboard) UpdateScore(name string, delta int) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.scores[name] += delta
+	lb.dirty = true
+}
+
+func (lb *Leaderboard) rebuild() {
+	if !lb.dirty {
+		return
+	}
+	lb.sorted = lb.sorted[:0]
+	for name, score := range lb.scores {
+		lb.sorted = append(lb.sorted, Player{name, score})
+	}
+	sort.Slice(lb.sorted, func(i, j int) bool {
+		return lb.sorted[i].Score > lb.sorted[j].Score
+	})
+	lb.dirty = false
+}
+
+func (lb *Leaderboard) GetRank(name string) int {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.rebuild()
+	for i, p := range lb.sorted {
+		if p.Name == name {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+func (lb *Leaderboard) GetTopK(k int) []Player {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.rebuild()
+	if k > len(lb.sorted) {
+		k = len(lb.sorted)
+	}
+	result := make([]Player, k)
+	copy(result, lb.sorted[:k])
+	return result
+}
+
+func main() {
+	lb := NewLeaderboard()
+	players := []struct{ name string; score int }{
+		{"Alice", 100}, {"Bob", 200}, {"Charlie", 150}, {"Dave", 80}, {"Eve", 175},
+	}
+	var wg sync.WaitGroup
+	for _, p := range players {
+		wg.Add(1)
+		go func(name string, score int) {
+			defer wg.Done()
+			lb.UpdateScore(name, score)
+		}(p.name, p.score)
+	}
+	wg.Wait()
+
+	fmt.Println("Top 3:", lb.GetTopK(3))
+	fmt.Println("Alice's rank:", lb.GetRank("Alice"))
+	lb.UpdateScore("Alice", 150)
+	fmt.Println("After update, Top 3:", lb.GetTopK(3))
+}
+```
+
+**Complexity:**
+- UpdateScore: O(1) amortized (lazy rebuild)
+- GetTopK / GetRank: O(N log N) on first call after update; O(K) / O(N) if sorted is clean
+- Space: O(N)
+
+**How would you scale this?**
+Redis Sorted Sets (`ZADD`, `ZRANK`, `ZRANGE`) are the standard solution for production leaderboards. They support O(log N) updates and rank queries. For global leaderboards at Google scale: shard by score range across Redis instances. Use approximate ranking with Count-Min Sketch for near-real-time global ranks without full sort. Periodically reconstruct the full leaderboard in a background job.
+
+**Follow-up:**
+Implement a time-windowed leaderboard (e.g., "top players this week"). Maintain separate score maps per time bucket; on GetTopK, aggregate across active buckets. How would you handle score ties with secondary sort (e.g., time of achieving score)? Store (score, -timestamp) as the sort key.
+
+---
+
+## Problem 16: Interval Merging at Scale
+
+**Problem Statement:**
+Merge overlapping intervals from a large input. Support concurrent insertion of new intervals and on-demand merge queries.
+
+```go
+package main
+
+import (
+	"fmt"
+	"sort"
+	"sync"
+)
+
+type Interval struct{ Start, End int }
 
 type IntervalSet struct {
 	mu        sync.RWMutex
 	intervals []Interval
-	dirty     bool
-}
-
-func NewIntervalSet() *IntervalSet {
-	return &IntervalSet{}
 }
 
 func (s *IntervalSet) Add(iv Interval) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.intervals = append(s.intervals, iv)
-	s.dirty = true
 }
 
 func (s *IntervalSet) Merge() []Interval {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.dirty {
-		return s.intervals
-	}
+	s.mu.RLock()
+	cp := make([]Interval, len(s.intervals))
+	copy(cp, s.intervals)
+	s.mu.RUnlock()
 
-	sort.Slice(s.intervals, func(i, j int) bool {
-		return s.intervals[i].Start < s.intervals[j].Start
+	if len(cp) == 0 {
+		return nil
+	}
+	sort.Slice(cp, func(i, j int) bool {
+		return cp[i].Start < cp[j].Start
 	})
 
-	merged := []Interval{s.intervals[0]}
-	for _, iv := range s.intervals[1:] {
+	merged := []Interval{cp[0]}
+	for _, iv := range cp[1:] {
 		last := &merged[len(merged)-1]
 		if iv.Start <= last.End {
 			if iv.End > last.End {
@@ -1748,617 +1507,254 @@ func (s *IntervalSet) Merge() []Interval {
 			merged = append(merged, iv)
 		}
 	}
-	s.intervals = merged
-	s.dirty = false
 	return merged
 }
 
-// InsertAndMerge inserts a new interval and merges in O(n)
-func insertAndMerge(intervals []Interval, newIv Interval) []Interval {
-	var result []Interval
-	i := 0
-
-	// Add all intervals that end before newIv starts
-	for i < len(intervals) && intervals[i].End < newIv.Start {
-		result = append(result, intervals[i])
-		i++
-	}
-
-	// Merge overlapping intervals with newIv
-	for i < len(intervals) && intervals[i].Start <= newIv.End {
-		if intervals[i].Start < newIv.Start {
-			newIv.Start = intervals[i].Start
-		}
-		if intervals[i].End > newIv.End {
-			newIv.End = intervals[i].End
-		}
-		i++
-	}
-	result = append(result, newIv)
-
-	// Add remaining
-	result = append(result, intervals[i:]...)
-	return result
+func (s *IntervalSet) InsertAndMerge(newIV Interval) []Interval {
+	s.Add(newIV)
+	return s.Merge()
 }
 
 func main() {
-	s := NewIntervalSet()
-	inputs := []Interval{{1, 3}, {2, 6}, {8, 10}, {15, 18}, {9, 12}}
+	s := &IntervalSet{}
+	initial := []Interval{{1, 3}, {2, 6}, {8, 10}, {15, 18}}
 	var wg sync.WaitGroup
-	for _, iv := range inputs {
+	for _, iv := range initial {
 		wg.Add(1)
-		go func(iv Interval) {
+		go func(i Interval) {
 			defer wg.Done()
-			s.Add(iv)
+			s.Add(i)
 		}(iv)
 	}
 	wg.Wait()
 
-	fmt.Println("Merged:", s.Merge())
+	fmt.Println("Merged:", s.Merge()) // [{1 6} {8 10} {15 18}]
 
-	// Insert into sorted merged list
-	merged := []Interval{{1, 3}, {6, 9}, {15, 18}}
-	result := insertAndMerge(merged, Interval{2, 5})
-	fmt.Println("After insert:", result)
+	result := s.InsertAndMerge(Interval{9, 16})
+	fmt.Println("After inserting [9,16]:", result) // [{1 6} {8 18}]
 }
 ```
 
 **Complexity:**
-- Merge (batch): O(n log n) for sort, O(n) scan
-- InsertAndMerge: O(n) — assuming pre-sorted list
+- Add: O(1) amortized
+- Merge: O(N log N) for sort + O(N) scan
+- Space: O(N)
 
-**Scale This?**
-- For calendar/scheduling systems: store intervals in a B-tree for O(log N) overlap queries.
-- Segment tree for stabbing queries (find all intervals containing a point) in O(log N + K).
-- Distribute by time range partitions; merge across partitions lazily.
+**How would you scale this?**
+For a calendar scheduling system serving millions of events: index intervals in a segment tree or interval tree for O(log N) overlap queries. For batch merging, use an external sort on start times followed by a single-pass merge — handles datasets larger than RAM. In distributed systems, partition by time range across nodes; merge within partitions is independent; a coordinator merges the boundary intervals across partitions.
 
-**Follow-up Generalization:**
-Find minimum number of meeting rooms needed (max overlapping intervals at any point). Count overlapping intervals for each point.
+**Follow-up:**
+Find all intervals that overlap with a query interval [L, R]. Use an interval tree (augmented BST where each node stores the max endpoint in its subtree) for O(log N + K) query time, K = number of overlapping results. How would you track coverage (total length covered by merged intervals)? Sum (End - Start) for each merged interval.
 
 ---
 
-## Problem 18: Worker Pool Pattern
+## Problem 17: Copy-on-Write Data Structure
 
 **Problem Statement:**
-Implement a bounded worker pool that processes tasks with a fixed number of goroutines, supporting graceful shutdown and result collection.
-
-**Go Solution:**
+Implement a copy-on-write (COW) slice that allows multiple readers to see a consistent snapshot while a writer atomically replaces the underlying slice.
 
 ```go
 package main
 
 import (
-	"context"
 	"fmt"
 	"sync"
-	"time"
-)
-
-type WorkerPool struct {
-	workers int
-	jobs    chan func() interface{}
-	results chan interface{}
-	wg      sync.WaitGroup
-}
-
-func NewWorkerPool(workers, bufSize int) *WorkerPool {
-	return &WorkerPool{
-		workers: workers,
-		jobs:    make(chan func() interface{}, bufSize),
-		results: make(chan interface{}, bufSize),
-	}
-}
-
-func (wp *WorkerPool) Start(ctx context.Context) {
-	for i := 0; i < wp.workers; i++ {
-		wp.wg.Add(1)
-		go func() {
-			defer wp.wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case job, ok := <-wp.jobs:
-					if !ok {
-						return
-					}
-					wp.results <- job()
-				}
-			}
-		}()
-	}
-}
-
-func (wp *WorkerPool) Submit(job func() interface{}) {
-	wp.jobs <- job
-}
-
-func (wp *WorkerPool) Stop() {
-	close(wp.jobs)
-	wp.wg.Wait()
-	close(wp.results)
-}
-
-func (wp *WorkerPool) Results() <-chan interface{} {
-	return wp.results
-}
-
-func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool := NewWorkerPool(4, 100)
-	pool.Start(ctx)
-
-	// Collect results in background
-	var collected []interface{}
-	done := make(chan struct{})
-	go func() {
-		for r := range pool.Results() {
-			collected = append(collected, r)
-		}
-		close(done)
-	}()
-
-	// Submit 10 jobs
-	for i := 0; i < 10; i++ {
-		n := i
-		pool.Submit(func() interface{} {
-			time.Sleep(10 * time.Millisecond)
-			return n * n
-		})
-	}
-
-	pool.Stop()
-	<-done
-	fmt.Println("Results:", collected)
-}
-```
-
-**Complexity:**
-- Throughput: O(tasks / workers) time
-- Space: O(workers + buffer)
-
-**Scale This?**
-- Dynamic resizing: scale workers up/down based on queue depth (auto-scaling).
-- Add priority queues for high-priority tasks.
-- Persistent job queue with Redis LPUSH/BRPOP for durability across restarts.
-
-**Follow-up Generalization:**
-Implement a semaphore-based rate limiter on top of the pool. Add per-worker metrics (tasks processed, latency percentiles).
-
----
-
-## Problem 19: Concurrent Pipeline
-
-**Problem Statement:**
-Build a multi-stage processing pipeline where each stage processes data concurrently and feeds the next stage via channels.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-)
-
-func generate(ctx context.Context, nums ...int) <-chan int {
-	out := make(chan int)
-	go func() {
-		defer close(out)
-		for _, n := range nums {
-			select {
-			case out <- n:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out
-}
-
-func square(ctx context.Context, in <-chan int) <-chan int {
-	out := make(chan int)
-	go func() {
-		defer close(out)
-		for n := range in {
-			select {
-			case out <- n * n:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return out
-}
-
-func filter(ctx context.Context, in <-chan int, pred func(int) bool) <-chan int {
-	out := make(chan int)
-	go func() {
-		defer close(out)
-		for n := range in {
-			if pred(n) {
-				select {
-				case out <- n:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-	return out
-}
-
-// Fan-out: distribute work to N workers
-func fanOut(ctx context.Context, in <-chan int, n int, fn func(int) int) []<-chan int {
-	outs := make([]<-chan int, n)
-	for i := 0; i < n; i++ {
-		out := make(chan int)
-		outs[i] = out
-		go func(out chan<- int) {
-			defer close(out)
-			for v := range in {
-				select {
-				case out <- fn(v):
-				case <-ctx.Done():
-					return
-				}
-			}
-		}(out)
-	}
-	return outs
-}
-
-func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	nums := generate(ctx, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-	squares := square(ctx, nums)
-	evens := filter(ctx, squares, func(n int) bool { return n%2 == 0 })
-
-	for v := range evens {
-		fmt.Printf("%d ", v)
-	}
-	fmt.Println()
-}
-```
-
-**Complexity:**
-- Throughput limited by slowest stage
-- Buffer channels between stages to reduce back-pressure stalls
-
-**Scale This?**
-- Add metrics per stage (throughput, latency, queue depth).
-- Dynamic fan-out: adjust number of workers per stage based on queue depth.
-- Persistent queues between stages for fault tolerance (Kafka topics).
-
-**Follow-up Generalization:**
-Implement a pipeline DSL builder. Add circuit breakers between stages to halt on downstream failure.
-
----
-
-## Problem 20: Deadlock Detection
-
-**Problem Statement:**
-Implement a resource allocation graph and detect deadlocks using cycle detection in a directed graph.
-
-**Go Solution:**
-
-```go
-package main
-
-import "fmt"
-
-// Resource Allocation Graph
-// Processes request resources; resources are assigned to processes
-type RAG struct {
-	// request[process] = list of requested resources
-	request map[string][]string
-	// assign[resource] = process holding it
-	assign map[string]string
-}
-
-func NewRAG() *RAG {
-	return &RAG{
-		request: make(map[string][]string),
-		assign:  make(map[string]string),
-	}
-}
-
-func (r *RAG) Request(process, resource string) {
-	r.request[process] = append(r.request[process], resource)
-}
-
-func (r *RAG) Assign(resource, process string) {
-	r.assign[resource] = process
-}
-
-// Build wait-for graph: process P waits for process Q if P requests resource held by Q
-func (r *RAG) buildWaitFor() map[string][]string {
-	wf := make(map[string][]string)
-	for process, resources := range r.request {
-		for _, res := range resources {
-			if holder, ok := r.assign[res]; ok && holder != process {
-				wf[process] = append(wf[process], holder)
-			}
-		}
-	}
-	return wf
-}
-
-func (r *RAG) HasDeadlock() bool {
-	wf := r.buildWaitFor()
-	visited := make(map[string]int) // 0=unvisited, 1=in-progress, 2=done
-
-	var dfs func(node string) bool
-	dfs = func(node string) bool {
-		visited[node] = 1
-		for _, neighbor := range wf[node] {
-			if visited[neighbor] == 1 {
-				return true
-			}
-			if visited[neighbor] == 0 && dfs(neighbor) {
-				return true
-			}
-		}
-		visited[node] = 2
-		return false
-	}
-
-	for node := range wf {
-		if visited[node] == 0 {
-			if dfs(node) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func main() {
-	r := NewRAG()
-	r.Assign("R1", "P1")
-	r.Assign("R2", "P2")
-	r.Request("P1", "R2") // P1 wants R2 (held by P2)
-	r.Request("P2", "R1") // P2 wants R1 (held by P1)
-
-	fmt.Println("Deadlock detected:", r.HasDeadlock()) // true
-
-	r2 := NewRAG()
-	r2.Assign("R1", "P1")
-	r2.Request("P2", "R1") // P2 waits for P1, no cycle
-	fmt.Println("Deadlock detected:", r2.HasDeadlock()) // false
-}
-```
-
-**Complexity:**
-- O(P + R) where P = processes, R = resources
-
-**Scale This?**
-- Distributed deadlock detection: each node runs local detection; share wait-for graph edges via gossip.
-- Timeout-based deadlock avoidance: abort and retry on lock timeout (common in databases).
-- Banker's algorithm for deadlock avoidance (requires advance resource declarations).
-
-**Follow-up Generalization:**
-Implement Banker's algorithm for deadlock avoidance. Model distributed transactions (2PC) and their deadlock potential.
-
----
-
-## Problem 21: LRU with TTL
-
-**Problem Statement:**
-Extend the LRU cache to support per-entry TTL. Expired entries should be lazily removed on access or eagerly via a background sweeper.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"container/list"
-	"fmt"
-	"sync"
-	"time"
-)
-
-type ttlEntry struct {
-	key     int
-	value   int
-	expires time.Time
-}
-
-type TTLLRUCache struct {
-	cap   int
-	mu    sync.Mutex
-	list  *list.List
-	items map[int]*list.Element
-}
-
-func NewTTLLRUCache(cap int) *TTLLRUCache {
-	c := &TTLLRUCache{
-		cap:   cap,
-		list:  list.New(),
-		items: make(map[int]*list.Element),
-	}
-	go c.sweepExpired()
-	return c
-}
-
-func (c *TTLLRUCache) Get(key int) (int, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	el, ok := c.items[key]
-	if !ok {
-		return -1, false
-	}
-	e := el.Value.(*ttlEntry)
-	if time.Now().After(e.expires) {
-		c.list.Remove(el)
-		delete(c.items, key)
-		return -1, false
-	}
-	c.list.MoveToFront(el)
-	return e.value, true
-}
-
-func (c *TTLLRUCache) Put(key, value int, ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.items[key]; ok {
-		c.list.MoveToFront(el)
-		e := el.Value.(*ttlEntry)
-		e.value = value
-		e.expires = time.Now().Add(ttl)
-		return
-	}
-	if c.list.Len() == c.cap {
-		back := c.list.Back()
-		c.list.Remove(back)
-		delete(c.items, back.Value.(*ttlEntry).key)
-	}
-	e := &ttlEntry{key, value, time.Now().Add(ttl)}
-	el := c.list.PushFront(e)
-	c.items[key] = el
-}
-
-func (c *TTLLRUCache) sweepExpired() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		c.mu.Lock()
-		now := time.Now()
-		for key, el := range c.items {
-			if now.After(el.Value.(*ttlEntry).expires) {
-				c.list.Remove(el)
-				delete(c.items, key)
-			}
-		}
-		c.mu.Unlock()
-	}
-}
-
-func main() {
-	cache := NewTTLLRUCache(3)
-	cache.Put(1, 100, 50*time.Millisecond)
-	cache.Put(2, 200, 500*time.Millisecond)
-
-	v, ok := cache.Get(1)
-	fmt.Printf("key=1 value=%d ok=%v\n", v, ok)
-
-	time.Sleep(100 * time.Millisecond)
-	_, ok = cache.Get(1)
-	fmt.Printf("key=1 after ttl: ok=%v\n", ok)
-}
-```
-
-**Complexity:**
-- Get/Put: O(1) amortized
-- Sweep: O(N) per tick
-
-**Scale This?**
-- Hierarchical expiry buckets: group entries by expiry second; O(1) batch expiration.
-- Redis EXPIRE for distributed TTL management.
-
-**Follow-up Generalization:**
-Segment-level TTL: all entries in a cache segment share a common expiry.
-
----
-
-## Problem 22: Concurrent Stack and Queue
-
-**Problem Statement:**
-Implement a lock-free or minimally-locked concurrent stack (LIFO) and queue (FIFO).
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"fmt"
 	"sync/atomic"
 	"unsafe"
 )
 
-// Lock-free stack using CAS
-type node struct {
-	val  int
-	next *node
+type COWSlice struct {
+	ptr atomic.Pointer[[]int]
+	mu  sync.Mutex // serializes writers
 }
 
-type LockFreeStack struct {
-	top unsafe.Pointer
+func NewCOWSlice(initial []int) *COWSlice {
+	c := &COWSlice{}
+	cp := make([]int, len(initial))
+	copy(cp, initial)
+	c.ptr.Store(&cp)
+	return c
 }
 
-func (s *LockFreeStack) Push(val int) {
-	n := &node{val: val}
-	for {
-		top := atomic.LoadPointer(&s.top)
-		n.next = (*node)(top)
-		if atomic.CompareAndSwapPointer(&s.top, top, unsafe.Pointer(n)) {
-			return
-		}
-	}
+// Read — zero-lock fast path via atomic pointer load
+func (c *COWSlice) Read() []int {
+	return *c.ptr.Load()
 }
 
-func (s *LockFreeStack) Pop() (int, bool) {
-	for {
-		top := atomic.LoadPointer(&s.top)
-		if top == nil {
-			return 0, false
-		}
-		n := (*node)(top)
-		if atomic.CompareAndSwapPointer(&s.top, top, unsafe.Pointer(n.next)) {
-			return n.val, true
-		}
-	}
+// Append — copy current slice, append, atomically swap
+func (c *COWSlice) Append(vals ...int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	old := *c.ptr.Load()
+	newSlice := make([]int, len(old)+len(vals))
+	copy(newSlice, old)
+	copy(newSlice[len(old):], vals)
+	c.ptr.Store(&newSlice)
 }
 
-// Mutex-based Queue
-type Queue struct {
-	head, tail *node
-	mu         [2]interface{} // separate head/tail locks
-	size       int64
+// Update — copy-on-write modification at index
+func (c *COWSlice) Update(idx, val int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	old := *c.ptr.Load()
+	newSlice := make([]int, len(old))
+	copy(newSlice, old)
+	newSlice[idx] = val
+	c.ptr.Store(&newSlice)
 }
+
+// Demonstrate that _ avoids "imported and not used" for unsafe in demo only
+var _ = unsafe.Sizeof(0)
 
 func main() {
-	s := &LockFreeStack{}
-	s.Push(1)
-	s.Push(2)
-	s.Push(3)
+	cow := NewCOWSlice([]int{1, 2, 3})
 
-	for {
-		v, ok := s.Pop()
-		if !ok {
-			break
-		}
-		fmt.Printf("%d ", v)
+	var wg sync.WaitGroup
+	// Multiple concurrent readers
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			snapshot := cow.Read()
+			fmt.Println("Read snapshot:", snapshot)
+		}()
 	}
-	fmt.Println()
+	// Concurrent writer
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cow.Append(4, 5)
+		fmt.Println("After append:", cow.Read())
+	}()
+	wg.Wait()
 }
 ```
 
 **Complexity:**
-- Push/Pop (lock-free): O(1) amortized, no lock contention
+- Read: O(1) — single atomic pointer load, no locks
+- Append/Update: O(N) — full slice copy per write
+- Space: O(N) per snapshot (old and new coexist briefly during swap)
 
-**Scale This?**
-- Michael-Scott queue for lock-free FIFO.
-- Use `sync.Pool` for object recycling to reduce GC pressure.
+**How would you scale this?**
+COW is used in Linux kernel (fork uses COW pages), Go's sync/Map internally, and ZFS (COW filesystem). For large structures where full copy is expensive: use persistent/functional data structures (e.g., persistent tries, HAMT) where sharing of unmodified subtrees gives O(log N) write with O(1) read. Docker layers use COW filesystem overlays for container images.
 
-**Follow-up Generalization:**
-Implement a bounded blocking queue (blocks push when full, blocks pop when empty) using channels.
+**Follow-up:**
+Implement a COW map using `sync/atomic` and `unsafe.Pointer` (or `atomic.Pointer[map[K]V]`). On write, lock, copy the map, mutate the copy, swap the pointer. How does this compare to `sync.RWMutex`? COW is better when reads vastly outnumber writes (e.g., config hot-reload); RWMutex is better for balanced read/write ratios since it avoids full copy overhead.
 
 ---
 
-## Problem 23: Bloom Filter
+## Problem 18: Lock-Free Queue Implementation
 
 **Problem Statement:**
-Implement a Bloom filter for probabilistic set membership testing. Use multiple hash functions and a bit array.
+Implement a lock-free MPMC (multi-producer, multi-consumer) queue using `sync/atomic` and compare-and-swap (CAS).
 
-**Go Solution:**
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"unsafe"
+)
+
+type node struct {
+	val  interface{}
+	next unsafe.Pointer
+}
+
+type LockFreeQueue struct {
+	head unsafe.Pointer
+	tail unsafe.Pointer
+}
+
+func NewLockFreeQueue() *LockFreeQueue {
+	sentinel := &node{}
+	p := unsafe.Pointer(sentinel)
+	return &LockFreeQueue{head: p, tail: p}
+}
+
+func (q *LockFreeQueue) Enqueue(val interface{}) {
+	n := &node{val: val}
+	np := unsafe.Pointer(n)
+	for {
+		tail := atomic.LoadPointer(&q.tail)
+		tailNode := (*node)(tail)
+		next := atomic.LoadPointer(&tailNode.next)
+		if tail == atomic.LoadPointer(&q.tail) {
+			if next == nil {
+				if atomic.CompareAndSwapPointer(&tailNode.next, nil, np) {
+					atomic.CompareAndSwapPointer(&q.tail, tail, np)
+					return
+				}
+			} else {
+				// Tail is behind; advance it
+				atomic.CompareAndSwapPointer(&q.tail, tail, next)
+			}
+		}
+	}
+}
+
+func (q *LockFreeQueue) Dequeue() (interface{}, bool) {
+	for {
+		head := atomic.LoadPointer(&q.head)
+		tail := atomic.LoadPointer(&q.tail)
+		headNode := (*node)(head)
+		next := atomic.LoadPointer(&headNode.next)
+		if head == atomic.LoadPointer(&q.head) {
+			if head == tail {
+				if next == nil {
+					return nil, false // empty
+				}
+				atomic.CompareAndSwapPointer(&q.tail, tail, next)
+			} else {
+				val := (*node)(next).val
+				if atomic.CompareAndSwapPointer(&q.head, head, next) {
+					return val, true
+				}
+			}
+		}
+	}
+}
+
+func main() {
+	q := NewLockFreeQueue()
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(v int) {
+			defer wg.Done()
+			q.Enqueue(v)
+		}(i)
+	}
+	wg.Wait()
+
+	for {
+		v, ok := q.Dequeue()
+		if !ok {
+			break
+		}
+		fmt.Println("Dequeued:", v)
+	}
+}
+```
+
+**Complexity:**
+- Enqueue/Dequeue: O(1) amortized (bounded CAS retries under contention)
+- Space: O(N) for N enqueued items
+
+**How would you scale this?**
+This is the Michael-Scott queue algorithm. Lock-free queues eliminate mutex contention in high-throughput pipelines. In Go, `chan` is implemented with a hybrid lock-free ring buffer + mutex fallback. For extreme throughput (LMAX Disruptor-style), use a lock-free ring buffer with power-of-2 size, cache-line-padded slots, and sequence numbers — avoids CAS retries entirely with a single writer.
+
+**Follow-up:**
+What is the ABA problem in CAS-based structures? Thread 1 reads pointer P with value A; thread 2 changes A→B→A; thread 1's CAS succeeds even though the node changed. Solution: tagged pointers (embed a version counter in the pointer's unused bits) or hazard pointers to safely reclaim memory. In Go, GC eliminates the ABA memory reclamation problem but not the logical ABA issue.
+
+---
+
+## Problem 19: Bloom Filter in Go
+
+**Problem Statement:**
+Implement a Bloom filter for approximate set membership queries with configurable false-positive rate.
 
 ```go
 package main
@@ -2371,615 +1767,276 @@ import (
 
 type BloomFilter struct {
 	bits    []bool
-	k       int // number of hash functions
-	m       int // bit array size
+	numHash int
+	m       uint // bit array size
 }
 
-func NewBloomFilter(n int, fpRate float64) *BloomFilter {
-	m := int(-float64(n) * math.Log(fpRate) / (math.Log(2) * math.Log(2)))
-	k := int(float64(m) / float64(n) * math.Log(2))
-	return &BloomFilter{bits: make([]bool, m), k: k, m: m}
+// NewBloomFilter creates a filter for n expected items with false positive rate p
+func NewBloomFilter(n int, p float64) *BloomFilter {
+	m := uint(math.Ceil(-float64(n) * math.Log(p) / (math.Log(2) * math.Log(2))))
+	k := int(math.Round(float64(m) / float64(n) * math.Log(2)))
+	return &BloomFilter{
+		bits:    make([]bool, m),
+		numHash: k,
+		m:       m,
+	}
 }
 
-func (bf *BloomFilter) hashes(item string) []int {
-	h1 := fnv.New64a()
+func (bf *BloomFilter) hashes(item string) []uint {
+	result := make([]uint, bf.numHash)
+	h1 := fnv.New64()
 	h1.Write([]byte(item))
 	v1 := h1.Sum64()
 
-	h2 := fnv.New64()
+	h2 := fnv.New64a()
 	h2.Write([]byte(item))
 	v2 := h2.Sum64()
 
-	positions := make([]int, bf.k)
-	for i := 0; i < bf.k; i++ {
-		positions[i] = int((v1+uint64(i)*v2)%uint64(bf.m))
+	for i := range result {
+		// Kirsch-Mitzenmacher optimization: h_i = h1 + i*h2
+		result[i] = uint(v1+uint64(i)*v2) % bf.m
 	}
-	return positions
+	return result
 }
 
 func (bf *BloomFilter) Add(item string) {
-	for _, pos := range bf.hashes(item) {
-		bf.bits[pos] = true
+	for _, h := range bf.hashes(item) {
+		bf.bits[h] = true
 	}
 }
 
-func (bf *BloomFilter) Contains(item string) bool {
-	for _, pos := range bf.hashes(item) {
-		if !bf.bits[pos] {
-			return false
+func (bf *BloomFilter) MayContain(item string) bool {
+	for _, h := range bf.hashes(item) {
+		if !bf.bits[h] {
+			return false // definitely not in set
 		}
 	}
+	return true // probably in set
+}
+
+func (bf *BloomFilter) FalsePositiveRate(n int) float64 {
+	// Estimated FP rate after n insertions
+	k := float64(bf.numHash)
+	m := float64(bf.m)
+	return math.Pow(1-math.Exp(-k*float64(n)/m), k)
+}
+
+func main() {
+	bf := NewBloomFilter(1000, 0.01) // 1000 items, 1% false positive rate
+	words := []string{"apple", "banana", "cherry", "date", "elderberry"}
+	for _, w := range words {
+		bf.Add(w)
+	}
+
+	tests := []string{"apple", "banana", "fig", "grape", "cherry"}
+	for _, t := range tests {
+		fmt.Printf("MayContain(%q): %v\n", t, bf.MayContain(t))
+	}
+	fmt.Printf("Estimated FP rate at 5 insertions: %.4f\n", bf.FalsePositiveRate(5))
+	fmt.Printf("Bit array size: %d bits (%.1f KB)\n", bf.m, float64(bf.m)/8/1024)
+}
+```
+
+**Complexity:**
+- Add/MayContain: O(k) where k = number of hash functions (typically 7-10)
+- Space: O(m) bits — m ≈ -n*ln(p) / ln(2)^2; for 1M items at 1% FP rate: ~1.14 MB
+
+**How would you scale this?**
+Google uses Bloom filters in BigTable to avoid disk lookups for non-existent keys. Cassandra uses them per SSTable. For distributed Bloom filters: each node maintains its own filter; queries are sent to all nodes; union of results. For streaming data with changing membership, use a Counting Bloom Filter (replace bits with counters) to support deletion. For time-windowed filters, use Rotating Bloom Filters (two filters, periodically clear and swap).
+
+**Follow-up:**
+What is the optimal number of hash functions k = (m/n) * ln(2)? How do you size m given n and desired FP rate p? m = -n * ln(p) / (ln(2))^2. How would you implement a thread-safe Bloom filter? Use `sync/atomic` with a uint64 bit array and atomic OR operations, or use a mutex around Add operations (MayContain is read-only so RLock suffices).
+
+---
+
+## Problem 20: Skip List Implementation
+
+**Problem Statement:**
+Implement a skip list — a probabilistic data structure supporting O(log N) search, insert, and delete with concurrent reads.
+
+```go
+package main
+
+import (
+	"fmt"
+	"math"
+	"math/rand"
+)
+
+const maxLevel = 16
+const probability = 0.5
+
+type SkipNode struct {
+	key     int
+	val     interface{}
+	forward []*SkipNode
+}
+
+type SkipList struct {
+	head    *SkipNode
+	level   int
+	length  int
+}
+
+func newNode(key int, val interface{}, level int) *SkipNode {
+	return &SkipNode{
+		key:     key,
+		val:     val,
+		forward: make([]*SkipNode, level),
+	}
+}
+
+func NewSkipList() *SkipList {
+	head := newNode(math.MinInt32, nil, maxLevel)
+	return &SkipList{head: head, level: 1}
+}
+
+func (sl *SkipList) randomLevel() int {
+	level := 1
+	for rand.Float64() < probability && level < maxLevel {
+		level++
+	}
+	return level
+}
+
+func (sl *SkipList) Search(key int) (interface{}, bool) {
+	cur := sl.head
+	for i := sl.level - 1; i >= 0; i-- {
+		for cur.forward[i] != nil && cur.forward[i].key < key {
+			cur = cur.forward[i]
+		}
+	}
+	cur = cur.forward[0]
+	if cur != nil && cur.key == key {
+		return cur.val, true
+	}
+	return nil, false
+}
+
+func (sl *SkipList) Insert(key int, val interface{}) {
+	update := make([]*SkipNode, maxLevel)
+	cur := sl.head
+	for i := sl.level - 1; i >= 0; i-- {
+		for cur.forward[i] != nil && cur.forward[i].key < key {
+			cur = cur.forward[i]
+		}
+		update[i] = cur
+	}
+	cur = cur.forward[0]
+	if cur != nil && cur.key == key {
+		cur.val = val
+		return
+	}
+	newLevel := sl.randomLevel()
+	if newLevel > sl.level {
+		for i := sl.level; i < newLevel; i++ {
+			update[i] = sl.head
+		}
+		sl.level = newLevel
+	}
+	n := newNode(key, val, newLevel)
+	for i := 0; i < newLevel; i++ {
+		n.forward[i] = update[i].forward[i]
+		update[i].forward[i] = n
+	}
+	sl.length++
+}
+
+func (sl *SkipList) Delete(key int) bool {
+	update := make([]*SkipNode, maxLevel)
+	cur := sl.head
+	for i := sl.level - 1; i >= 0; i-- {
+		for cur.forward[i] != nil && cur.forward[i].key < key {
+			cur = cur.forward[i]
+		}
+		update[i] = cur
+	}
+	cur = cur.forward[0]
+	if cur == nil || cur.key != key {
+		return false
+	}
+	for i := 0; i < sl.level; i++ {
+		if update[i].forward[i] != cur {
+			break
+		}
+		update[i].forward[i] = cur.forward[i]
+	}
+	for sl.level > 1 && sl.head.forward[sl.level-1] == nil {
+		sl.level--
+	}
+	sl.length--
 	return true
 }
 
-func main() {
-	bf := NewBloomFilter(1000, 0.01) // 1000 items, 1% false positive
-	items := []string{"apple", "banana", "cherry", "date"}
-	for _, item := range items {
-		bf.Add(item)
-	}
-
-	tests := []string{"apple", "banana", "elderberry", "fig"}
-	for _, t := range tests {
-		fmt.Printf("%s: %v\n", t, bf.Contains(t))
-	}
-}
-```
-
-**Complexity:**
-- Add/Contains: O(k) where k = number of hash functions
-- Space: O(m) bits ≈ O(n * log(1/fp) / ln2)
-
-**Scale This?**
-- Distributed Bloom filter: partition bit array across nodes (bitwise OR for merges).
-- Counting Bloom filter: use counters instead of bits to support deletion.
-- Scalable Bloom filter: chain multiple filters as they fill up.
-
-**Follow-up Generalization:**
-Count-Min Sketch for approximate frequency estimation. HyperLogLog for cardinality estimation.
-
----
-
-## Problem 24: Context-Aware Request Timeout
-
-**Problem Statement:**
-Implement middleware that enforces per-request timeouts using context, propagating cancellation through all goroutines spawned during the request.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"time"
-)
-
-type Handler func(ctx context.Context, req string) (string, error)
-
-func withTimeout(h Handler, timeout time.Duration) Handler {
-	return func(ctx context.Context, req string) (string, error) {
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		return h(ctx, req)
-	}
-}
-
-func withRetry(h Handler, maxRetries int) Handler {
-	return func(ctx context.Context, req string) (string, error) {
-		var lastErr error
-		for i := 0; i < maxRetries; i++ {
-			if ctx.Err() != nil {
-				return "", ctx.Err()
-			}
-			result, err := h(ctx, req)
-			if err == nil {
-				return result, nil
-			}
-			lastErr = err
-			backoff := time.Duration(1<<uint(i)) * 10 * time.Millisecond
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return "", ctx.Err()
-			}
-		}
-		return "", lastErr
-	}
-}
-
-func fetchData(ctx context.Context, req string) (string, error) {
-	// Simulate work with context awareness
-	select {
-	case <-time.After(50 * time.Millisecond):
-		return "data for " + req, nil
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
-func main() {
-	handler := withRetry(withTimeout(fetchData, 100*time.Millisecond), 3)
-
-	ctx := context.Background()
-	result, err := handler(ctx, "request-1")
-	fmt.Printf("result=%s err=%v\n", result, err)
-
-	// Test timeout
-	ctx2, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	_, err2 := handler(ctx2, "request-2")
-	fmt.Printf("timeout err: %v\n", err2)
-}
-```
-
-**Complexity:**
-- Overhead: O(1) per request for context creation/cancellation
-
-**Scale This?**
-- Hierarchical timeouts: outer request timeout → per-RPC timeout → per-retry timeout.
-- Deadline propagation: gRPC automatically propagates deadlines across service boundaries.
-- Budget-based: subtract elapsed time from remaining budget at each service hop.
-
-**Follow-up Generalization:**
-Implement `singleflight.Group` for deduplicating concurrent identical requests. Add request tracing with `context` values.
-
----
-
-## Problem 25: Semaphore
-
-**Problem Statement:**
-Implement a semaphore in Go to limit concurrency (e.g., max 5 concurrent DB connections) using channels.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"context"
-	"fmt"
-	"sync"
-	"time"
-)
-
-type Semaphore struct {
-	ch chan struct{}
-}
-
-func NewSemaphore(n int) *Semaphore {
-	return &Semaphore{ch: make(chan struct{}, n)}
-}
-
-func (s *Semaphore) Acquire(ctx context.Context) error {
-	select {
-	case s.ch <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (s *Semaphore) Release() {
-	<-s.ch
-}
-
-func (s *Semaphore) TryAcquire() bool {
-	select {
-	case s.ch <- struct{}{}:
-		return true
-	default:
-		return false
-	}
-}
-
-func main() {
-	sem := NewSemaphore(3)
-	var wg sync.WaitGroup
-
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			defer cancel()
-
-			if err := sem.Acquire(ctx); err != nil {
-				fmt.Printf("worker %d: failed to acquire: %v\n", id, err)
-				return
-			}
-			defer sem.Release()
-
-			fmt.Printf("worker %d: working\n", id)
-			time.Sleep(100 * time.Millisecond)
-			fmt.Printf("worker %d: done\n", id)
-		}(i)
-	}
-	wg.Wait()
-}
-```
-
-**Complexity:**
-- Acquire/Release: O(1)
-- Max concurrent goroutines: N (semaphore value)
-
-**Scale This?**
-- Weighted semaphore: acquire(n) takes n slots (for variable-cost operations).
-- `golang.org/x/sync/semaphore` provides a weighted semaphore implementation.
-- Distributed semaphore: use Redis SETNX + EXPIRE for cross-service limiting.
-
-**Follow-up Generalization:**
-Read-write semaphore: allow N concurrent readers OR 1 exclusive writer (RWMutex is this).
-
----
-
-## Problem 26: String Search (KMP)
-
-**Problem Statement:**
-Implement Knuth-Morris-Pratt string search. Find all occurrences of a pattern in a text in O(n+m).
-
-**Go Solution:**
-
-```go
-package main
-
-import "fmt"
-
-func buildLPS(pattern string) []int {
-	m := len(pattern)
-	lps := make([]int, m)
-	length := 0
-	i := 1
-	for i < m {
-		if pattern[i] == pattern[length] {
-			length++
-			lps[i] = length
-			i++
-		} else {
-			if length != 0 {
-				length = lps[length-1]
-			} else {
-				lps[i] = 0
-				i++
-			}
-		}
-	}
-	return lps
-}
-
-func KMPSearch(text, pattern string) []int {
-	n, m := len(text), len(pattern)
-	if m == 0 {
-		return nil
-	}
-	lps := buildLPS(pattern)
-	var matches []int
-	i, j := 0, 0
-	for i < n {
-		if text[i] == pattern[j] {
-			i++
-			j++
-		}
-		if j == m {
-			matches = append(matches, i-j)
-			j = lps[j-1]
-		} else if i < n && text[i] != pattern[j] {
-			if j != 0 {
-				j = lps[j-1]
-			} else {
-				i++
-			}
-		}
-	}
-	return matches
-}
-
-func main() {
-	text := "ababcababcababc"
-	pattern := "ababc"
-	fmt.Println("Matches at:", KMPSearch(text, pattern)) // [0 5 9]
-}
-```
-
-**Complexity:**
-- Preprocessing (LPS): O(m)
-- Search: O(n)
-- Total: O(n + m)
-
-**Scale This?**
-- Aho-Corasick for multi-pattern search in O(n + sum(m) + k matches).
-- GPU-accelerated SIMD string search for GB/s throughput.
-- Distributed full-text search: Elasticsearch uses inverted indexes; not per-character search.
-
-**Follow-up Generalization:**
-Rabin-Karp rolling hash for multiple pattern search. Z-function for pattern repetition analysis.
-
----
-
-## Problem 27: Matrix Spiral Traversal
-
-**Problem Statement:**
-Traverse an NxM matrix in spiral order. Implement a concurrent version that processes each layer in parallel.
-
-**Go Solution:**
-
-```go
-package main
-
-import "fmt"
-
-func spiralOrder(matrix [][]int) []int {
-	if len(matrix) == 0 {
-		return nil
-	}
-	top, bottom, left, right := 0, len(matrix)-1, 0, len(matrix[0])-1
+func (sl *SkipList) Range(lo, hi int) []int {
 	var result []int
-
-	for top <= bottom && left <= right {
-		for i := left; i <= right; i++ {
-			result = append(result, matrix[top][i])
+	cur := sl.head.forward[0]
+	for cur != nil && cur.key <= hi {
+		if cur.key >= lo {
+			result = append(result, cur.key)
 		}
-		top++
-		for i := top; i <= bottom; i++ {
-			result = append(result, matrix[i][right])
-		}
-		right--
-		if top <= bottom {
-			for i := right; i >= left; i-- {
-				result = append(result, matrix[bottom][i])
-			}
-			bottom--
-		}
-		if left <= right {
-			for i := bottom; i >= top; i-- {
-				result = append(result, matrix[i][left])
-			}
-			left++
-		}
+		cur = cur.forward[0]
 	}
 	return result
 }
 
 func main() {
-	matrix := [][]int{
-		{1, 2, 3},
-		{4, 5, 6},
-		{7, 8, 9},
+	sl := NewSkipList()
+	keys := []int{3, 6, 7, 9, 12, 19, 17, 26, 21, 25}
+	for _, k := range keys {
+		sl.Insert(k, k*10)
 	}
-	fmt.Println(spiralOrder(matrix)) // [1 2 3 6 9 8 7 4 5]
+
+	v, ok := sl.Search(19)
+	fmt.Printf("Search(19): val=%v, found=%v\n", v, ok)
+
+	fmt.Println("Range [7, 21]:", sl.Range(7, 21))
+
+	sl.Delete(19)
+	_, ok = sl.Search(19)
+	fmt.Println("After delete, Search(19):", ok)
+
+	fmt.Printf("Length: %d, Levels: %d\n", sl.length, sl.level)
 }
 ```
 
 **Complexity:**
-- Time: O(n*m)
-- Space: O(1) extra (output not counted)
+- Search/Insert/Delete: O(log N) expected
+- Space: O(N log N) expected (due to multiple forward pointers)
 
-**Scale This?**
-- For image processing, spiral traversal is used in cache-efficient access patterns.
-- Parallelize by processing outer rings concurrently (but they're independent).
+**How would you scale this?**
+Redis Sorted Sets are implemented as skip lists. For concurrent skip lists: use lock-free techniques with CAS per level pointer (the Java ConcurrentSkipListMap does this). For distributed sorted sets: partition by key range; each node owns a contiguous range and is itself a skip list. Range queries that span partitions are assembled by a coordinator. For persistent skip lists, write-ahead log (WAL) each Insert/Delete before modifying memory.
 
-**Follow-up Generalization:**
-Generate a spiral matrix (fill in spiral order). Rotate a matrix 90 degrees in-place.
-
----
-
-## Problem 28: Min Stack
-
-**Problem Statement:**
-Design a stack that supports push, pop, top, and retrieving the minimum element in O(1) time.
-
-**Go Solution:**
-
-```go
-package main
-
-import "fmt"
-
-type MinStack struct {
-	data []int
-	mins []int
-}
-
-func (s *MinStack) Push(val int) {
-	s.data = append(s.data, val)
-	if len(s.mins) == 0 || val <= s.mins[len(s.mins)-1] {
-		s.mins = append(s.mins, val)
-	}
-}
-
-func (s *MinStack) Pop() {
-	top := s.data[len(s.data)-1]
-	s.data = s.data[:len(s.data)-1]
-	if top == s.mins[len(s.mins)-1] {
-		s.mins = s.mins[:len(s.mins)-1]
-	}
-}
-
-func (s *MinStack) Top() int {
-	return s.data[len(s.data)-1]
-}
-
-func (s *MinStack) GetMin() int {
-	return s.mins[len(s.mins)-1]
-}
-
-func main() {
-	s := &MinStack{}
-	s.Push(5)
-	s.Push(3)
-	s.Push(7)
-	s.Push(2)
-	fmt.Println(s.GetMin()) // 2
-	s.Pop()
-	fmt.Println(s.GetMin()) // 3
-}
-```
-
-**Complexity:**
-- All operations: O(1)
-- Space: O(n) for the auxiliary min stack
-
-**Scale This?**
-- Min deque for sliding window minimum.
-- Monotonic stack for next-greater-element problems.
-
-**Follow-up Generalization:**
-Max stack, median stack (using two heaps). Min queue using two min stacks.
+**Follow-up:**
+How does a skip list compare to a balanced BST (red-black tree, AVL tree)? Skip list has simpler implementation, easier concurrent access (lock per level vs rebalancing locks), and comparable O(log N) performance. Red-black trees have better worst-case guarantees (skip lists are probabilistic). How would you make the skip list concurrent? Use read locks for Search, write locks per update level, or use a fully lock-free approach with CAS pointers at each level.
 
 ---
 
-## Problem 29: LongestCommonSubsequence
+## Summary Table
 
-**Problem Statement:**
-Find the longest common subsequence of two strings using dynamic programming with memoization.
-
-**Go Solution:**
-
-```go
-package main
-
-import "fmt"
-
-func lcs(a, b string) int {
-	m, n := len(a), len(b)
-	dp := make([][]int, m+1)
-	for i := range dp {
-		dp[i] = make([]int, n+1)
-	}
-	for i := 1; i <= m; i++ {
-		for j := 1; j <= n; j++ {
-			if a[i-1] == b[j-1] {
-				dp[i][j] = dp[i-1][j-1] + 1
-			} else {
-				if dp[i-1][j] > dp[i][j-1] {
-					dp[i][j] = dp[i-1][j]
-				} else {
-					dp[i][j] = dp[i][j-1]
-				}
-			}
-		}
-	}
-	return dp[m][n]
-}
-
-// Space-optimized: O(n) space
-func lcsOptimized(a, b string) int {
-	m, n := len(a), len(b)
-	prev := make([]int, n+1)
-	curr := make([]int, n+1)
-	for i := 1; i <= m; i++ {
-		for j := 1; j <= n; j++ {
-			if a[i-1] == b[j-1] {
-				curr[j] = prev[j-1] + 1
-			} else if prev[j] > curr[j-1] {
-				curr[j] = prev[j]
-			} else {
-				curr[j] = curr[j-1]
-			}
-		}
-		prev, curr = curr, make([]int, n+1)
-	}
-	return prev[n]
-}
-
-func main() {
-	fmt.Println(lcs("ABCBDAB", "BDCAB"))          // 4
-	fmt.Println(lcsOptimized("ABCBDAB", "BDCAB")) // 4
-}
-```
-
-**Complexity:**
-- Time: O(m*n)
-- Space: O(m*n) standard, O(n) optimized
-
-**Scale This?**
-- Diff algorithms (git diff) use LCS as core.
-- For long DNA sequences, use Hirschberg's algorithm: O(mn) time, O(min(m,n)) space with backtracking.
-- Parallel DP: anti-diagonal wavefront parallelism with goroutines.
-
-**Follow-up Generalization:**
-Edit distance (Levenshtein), shortest common supersequence, diff patch generation.
+| # | Problem | Core Data Structure | Time Complexity | Key Go Feature |
+|---|---------|--------------------|-----------------|-|
+| 1 | Concurrent Merge Sort | Divide & Conquer | O(n log n) | goroutines + WaitGroup |
+| 2 | LRU Cache | DLL + HashMap | O(1) | sync.RWMutex |
+| 3 | Rate Limiter | Token Bucket | O(1) | sync.Mutex + time |
+| 4 | Word Frequency | HashMap + Pipeline | O(N/W) | channels + WaitGroup |
+| 5 | Pub-Sub | Buffered Channels | O(S) | select + channels |
+| 6 | Trie | 26-ary Tree | O(L) | structs + recursion |
+| 7 | Concurrent BFS | Queue + sync.Map | O(V+E) | sync.Map + WaitGroup |
+| 8 | Top-K Pipeline | Min-Heap + Pipeline | O(N log K / W) | container/heap + channels |
+| 9 | Sliding Window Max | Monotonic Deque | O(n) | slice as deque |
+| 10 | Two-Sum Sharded | HashMap | O(N/W) | goroutines + sync.Mutex |
+| 11 | Job Scheduler DAG | Topological Sort | O(V+E) | atomic + channels |
+| 12 | Consistent Hashing | Sorted Ring | O(log R) | crypto/sha256 + sort |
+| 13 | K-Way Merge | Min-Heap + Channels | O(N log K) | container/heap + chan |
+| 14 | Fibonacci Memoization | Singleflight | O(N) | sync.WaitGroup + map |
+| 15 | Leaderboard | Sorted Slice | O(N log N) | sync.RWMutex + sort |
+| 16 | Interval Merging | Sorted Intervals | O(N log N) | sync.RWMutex |
+| 17 | Copy-on-Write Slice | Atomic Pointer | O(N) write, O(1) read | atomic.Pointer |
+| 18 | Lock-Free Queue | Michael-Scott Queue | O(1) amortized | sync/atomic + unsafe |
+| 19 | Bloom Filter | Bit Array | O(k) | hash/fnv |
+| 20 | Skip List | Probabilistic BST | O(log N) expected | structs + random |
 
 ---
 
-## Problem 30: Channel Fan-In
-
-**Problem Statement:**
-Implement a fan-in multiplexer that merges multiple input channels into a single output channel using goroutines.
-
-**Go Solution:**
-
-```go
-package main
-
-import (
-	"fmt"
-	"sync"
-	"time"
-)
-
-func fanIn(channels ...<-chan int) <-chan int {
-	out := make(chan int)
-	var wg sync.WaitGroup
-
-	merge := func(ch <-chan int) {
-		defer wg.Done()
-		for v := range ch {
-			out <- v
-		}
-	}
-
-	wg.Add(len(channels))
-	for _, ch := range channels {
-		go merge(ch)
-	}
-
-	go func() {
-		wg.Wait()
-		close(out)
-	}()
-
-	return out
-}
-
-func source(vals ...int) <-chan int {
-	ch := make(chan int)
-	go func() {
-		defer close(ch)
-		for _, v := range vals {
-			time.Sleep(10 * time.Millisecond)
-			ch <- v
-		}
-	}()
-	return ch
-}
-
-func main() {
-	ch1 := source(1, 4, 7)
-	ch2 := source(2, 5, 8)
-	ch3 := source(3, 6, 9)
-
-	merged := fanIn(ch1, ch2, ch3)
-	for v := range merged {
-		fmt.Printf("%d ", v)
-	}
-	fmt.Println()
-}
-```
-
-**Complexity:**
-- O(1) per message routing
-- One goroutine per input channel
-
-**Scale This?**
-- Dynamic fan-in: add/remove channels at runtime using a registry + select loop.
-- For hundreds of channels, use `reflect.Select` to select over a dynamic slice of channels.
-- Context-aware cancellation: pass `ctx` into each merge goroutine.
-
-**Follow-up Generalization:**
-Fan-out + fan-in: distribute a single stream to N workers, collect results. This is the MapReduce pattern in miniature.
-
----
-
-*© 2024 Gaurav Patil — GoForge Platform. All rights reserved.*
+> © 2024 Gaurav Patil — GoForge Platform. All rights reserved.

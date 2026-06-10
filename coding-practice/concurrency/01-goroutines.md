@@ -4754,3 +4754,4375 @@ flowchart TD
 5. Add `WARN` state: healthy but latency > 500ms
 
 ---
+## Q23: Goroutine-Based Rate Limiter (Token Bucket)  [Level 5 — Interview Level]
+> **Tags:** `#rate-limiter` `#token-bucket` `#goroutines` `#channel` `#time`
+
+### Problem Statement
+Implement a token bucket rate limiter using goroutines. The bucket holds up to `capacity` tokens; tokens are added at `rate` per second. `Allow()` returns true if a token is available (consuming it), false otherwise. `Wait(ctx)` blocks until a token is available or ctx is done.
+
+### Input / Output / Constraints
+- rate float64 (tokens per second)
+- capacity int (max burst size)
+- Allow() bool — non-blocking
+- Wait(ctx) error — blocking, respects context
+- Thread-safe; multiple goroutines calling concurrently
+- No external packages (time/rate allowed as reference only)
+
+### Thought Process
+1. Background goroutine fills the bucket: `time.NewTicker(1s/rate)`
+2. Bucket = buffered channel of capacity; tokens = items in channel
+3. Allow: non-blocking select receive from channel
+4. Wait: blocking receive with ctx.Done() select
+5. Refill goroutine: send to channel if not full (non-blocking)
+
+### Brute Force
+```go
+// Sleep-based — inaccurate and wasteful
+package main
+
+import "time"
+
+type NaiveLimiter struct{ rate time.Duration }
+
+func (l *NaiveLimiter) Wait() { time.Sleep(l.rate) }
+```
+**Time:** O(1) | **Space:** O(1) — but ignores burst
+
+### Better Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+type TokenBucket struct {
+    tokens chan struct{}
+}
+
+func NewTokenBucket(rate float64, capacity int) *TokenBucket {
+    tb := &TokenBucket{tokens: make(chan struct{}, capacity)}
+    // Pre-fill to capacity
+    for i := 0; i < capacity; i++ {
+        tb.tokens <- struct{}{}
+    }
+    interval := time.Duration(float64(time.Second) / rate)
+    go func() {
+        ticker := time.NewTicker(interval)
+        defer ticker.Stop()
+        for range ticker.C {
+            select {
+            case tb.tokens <- struct{}{}:
+            default: // bucket full
+            }
+        }
+    }()
+    return tb
+}
+
+func (tb *TokenBucket) Allow() bool {
+    select {
+    case <-tb.tokens:
+        return true
+    default:
+        return false
+    }
+}
+
+func (tb *TokenBucket) Wait(ctx context.Context) error {
+    select {
+    case <-tb.tokens:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+func main() {
+    limiter := NewTokenBucket(5, 10) // 5 req/s, burst 10
+    ctx := context.Background()
+    for i := 0; i < 15; i++ {
+        if err := limiter.Wait(ctx); err != nil {
+            fmt.Println("cancelled")
+            break
+        }
+        fmt.Printf("request %d allowed at %s\n", i, time.Now().Format("15:04:05.000"))
+    }
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+// TokenBucketLimiter is a production-grade token bucket rate limiter.
+type TokenBucketLimiter struct {
+    capacity int64
+    tokens   atomic.Int64
+    rate     float64 // tokens per second
+    mu       sync.Mutex
+    waiters  []waiter
+    closed   chan struct{}
+}
+
+type waiter struct {
+    ch chan struct{}
+}
+
+func NewTokenBucketLimiter(rate float64, capacity int) *TokenBucketLimiter {
+    l := &TokenBucketLimiter{
+        capacity: int64(capacity),
+        rate:     rate,
+        closed:   make(chan struct{}),
+    }
+    l.tokens.Store(int64(capacity))
+
+    interval := time.Duration(float64(time.Second) / rate)
+    go l.refill(interval)
+    return l
+}
+
+func (l *TokenBucketLimiter) refill(interval time.Duration) {
+    ticker := time.NewTicker(interval)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-l.closed:
+            return
+        case <-ticker.C:
+            newVal := l.tokens.Add(1)
+            if newVal > l.capacity {
+                l.tokens.Store(l.capacity)
+                continue
+            }
+            // Wake one waiter
+            l.mu.Lock()
+            if len(l.waiters) > 0 {
+                w := l.waiters[0]
+                l.waiters = l.waiters[1:]
+                l.mu.Unlock()
+                select {
+                case w.ch <- struct{}{}:
+                default:
+                }
+            } else {
+                l.mu.Unlock()
+            }
+        }
+    }
+}
+
+// Allow consumes a token if available. Non-blocking.
+func (l *TokenBucketLimiter) Allow() bool {
+    for {
+        cur := l.tokens.Load()
+        if cur <= 0 {
+            return false
+        }
+        if l.tokens.CompareAndSwap(cur, cur-1) {
+            return true
+        }
+    }
+}
+
+// Wait blocks until a token is available or ctx is done.
+func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
+    if l.Allow() {
+        return nil
+    }
+
+    ch := make(chan struct{}, 1)
+    w := waiter{ch: ch}
+
+    l.mu.Lock()
+    l.waiters = append(l.waiters, w)
+    l.mu.Unlock()
+
+    select {
+    case <-ch:
+        // Consume the token that refill() reserved for us
+        return nil
+    case <-ctx.Done():
+        // Remove ourselves from waiters
+        l.mu.Lock()
+        for i, ww := range l.waiters {
+            if ww.ch == ch {
+                l.waiters = append(l.waiters[:i], l.waiters[i+1:]...)
+                break
+            }
+        }
+        l.mu.Unlock()
+        return ctx.Err()
+    }
+}
+
+func (l *TokenBucketLimiter) Close() {
+    close(l.closed)
+}
+
+func main() {
+    limiter := NewTokenBucketLimiter(10, 5) // 10 req/s, burst 5
+    defer limiter.Close()
+
+    var wg sync.WaitGroup
+    for i := 0; i < 20; i++ {
+        wg.Add(1)
+        i := i
+        go func() {
+            defer wg.Done()
+            ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+            defer cancel()
+            if err := limiter.Wait(ctx); err != nil {
+                fmt.Printf("req %d denied: %v\n", i, err)
+                return
+            }
+            fmt.Printf("req %d processed at %s\n", i, time.Now().Format("15:04:05.000"))
+        }()
+    }
+    wg.Wait()
+}
+```
+**Time:** O(1) Allow, O(waiters) Wake | **Space:** O(capacity + waiters)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Use `golang.org/x/time/rate` for production; this illustrates internals |
+| Edge Cases | Waiter cancellation must remove from queue to avoid memory leak |
+| Error Handling | Distinguish `context.DeadlineExceeded` vs `context.Canceled` for metrics |
+| Memory | Waiter list grows if rate < demand; add max-waiter cap with 429 response |
+| Concurrency | CAS loop in Allow() is lock-free; waiter queue needs mutex |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["refill ticker (1s/rate)"] --> B["tokens.Add(1)"]
+    B --> C{"waiters > 0?"}
+    C -- yes --> D["wake first waiter via ch"]
+    C -- no --> E["token stays in bucket"]
+    F["Allow()"] --> G{"tokens > 0?"}
+    G -- yes --> H["CAS tokens-1, return true"]
+    G -- no --> I["return false"]
+    J["Wait(ctx)"] --> K{"Allow() success?"}
+    K -- yes --> L["return nil"]
+    K -- no --> M["register waiter"]
+    M --> N{"select ch / ctx.Done()"}
+    N -- ch --> O["return nil"]
+    N -- ctx.Done() --> P["remove waiter, return err"]
+```
+
+### Interviewer Questions
+1. What is the difference between token bucket and leaky bucket algorithms?
+2. Why is `golang.org/x/time/rate` preferred in production?
+3. How does the waiter list prevent starvation?
+4. What happens to pending waiters when the limiter is closed?
+5. How would you implement a per-user rate limiter for an HTTP API?
+6. How do you handle clock skew in distributed rate limiters?
+7. What is the difference between rate limiting and throttling?
+
+### Follow-Up Questions
+1. Implement a sliding window rate limiter (last N seconds)
+2. Add Redis-backed distributed rate limiting across multiple servers
+3. Implement rate limiter middleware for net/http
+4. Add burst detection: log when requests exceed 80% of bucket capacity
+5. Implement a leaky bucket (smooth output rate regardless of bursty input)
+
+---
+
+## Q24: Job Queue with Priority (Goroutines + Heap)  [Level 5 — Interview Level]
+> **Tags:** `#priority-queue` `#heap` `#goroutines` `#job-queue` `#scheduling`
+
+### Problem Statement
+Implement a concurrent priority job queue. Jobs have a priority (higher = runs first). Multiple producers submit jobs; a pool of workers processes the highest-priority job available. Use heap for O(log N) insert and O(log N) extract-max.
+
+### Input / Output / Constraints
+- Submit(job Job) — any goroutine can call
+- N worker goroutines process jobs in priority order
+- Job: {ID string, Priority int, Fn func()}
+- Thread-safe; no job is lost or run twice
+- Workers should park when queue is empty
+
+### Thought Process
+1. `container/heap` implements min-heap; negate priority for max-heap behavior
+2. Wrap heap with mutex + condition variable (sync.Cond)
+3. Submit: lock, push, signal cond
+4. Worker: lock, wait on cond while empty, pop, unlock, execute
+
+### Brute Force
+```go
+// Linear scan for max priority — O(N) extract
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+type Job struct {
+    ID       string
+    Priority int
+    Fn       func()
+}
+
+type NaiveQueue struct {
+    mu   sync.Mutex
+    jobs []Job
+    cond *sync.Cond
+}
+
+func (q *NaiveQueue) Submit(j Job) {
+    q.mu.Lock()
+    q.jobs = append(q.jobs, j)
+    q.cond.Signal()
+    q.mu.Unlock()
+}
+
+func (q *NaiveQueue) Pop() Job {
+    q.mu.Lock()
+    defer q.mu.Unlock()
+    for len(q.jobs) == 0 {
+        q.cond.Wait()
+    }
+    // find max
+    best := 0
+    for i, j := range q.jobs {
+        if j.Priority > q.jobs[best].Priority {
+            best = i
+        }
+    }
+    j := q.jobs[best]
+    q.jobs = append(q.jobs[:best], q.jobs[best+1:]...)
+    return j
+}
+
+func main() { fmt.Println("naive priority queue") }
+```
+**Time:** O(N) extract | **Space:** O(N)
+
+### Better Solution
+```go
+package main
+
+import (
+    "container/heap"
+    "fmt"
+    "sync"
+)
+
+type Job struct {
+    ID       string
+    Priority int
+    Fn       func()
+}
+
+// jobHeap implements heap.Interface (max-heap by Priority)
+type jobHeap []Job
+
+func (h jobHeap) Len() int            { return len(h) }
+func (h jobHeap) Less(i, j int) bool  { return h[i].Priority > h[j].Priority } // max-heap
+func (h jobHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *jobHeap) Push(x interface{}) { *h = append(*h, x.(Job)) }
+func (h *jobHeap) Pop() interface{} {
+    old := *h
+    n := len(old)
+    x := old[n-1]
+    *h = old[:n-1]
+    return x
+}
+
+type PriorityQueue struct {
+    h    jobHeap
+    mu   sync.Mutex
+    cond *sync.Cond
+    done bool
+}
+
+func NewPriorityQueue() *PriorityQueue {
+    pq := &PriorityQueue{}
+    pq.cond = sync.NewCond(&pq.mu)
+    heap.Init(&pq.h)
+    return pq
+}
+
+func (pq *PriorityQueue) Submit(j Job) {
+    pq.mu.Lock()
+    heap.Push(&pq.h, j)
+    pq.cond.Signal()
+    pq.mu.Unlock()
+}
+
+func (pq *PriorityQueue) Pop() (Job, bool) {
+    pq.mu.Lock()
+    defer pq.mu.Unlock()
+    for pq.h.Len() == 0 && !pq.done {
+        pq.cond.Wait()
+    }
+    if pq.h.Len() == 0 {
+        return Job{}, false
+    }
+    return heap.Pop(&pq.h).(Job), true
+}
+
+func (pq *PriorityQueue) Close() {
+    pq.mu.Lock()
+    pq.done = true
+    pq.cond.Broadcast()
+    pq.mu.Unlock()
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "container/heap"
+    "fmt"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type Job struct {
+    ID         string
+    Priority   int
+    SubmitTime time.Time
+    Fn         func() error
+}
+
+// jobHeap: max-heap by Priority, tie-break by SubmitTime (FIFO)
+type jobHeap []*Job
+
+func (h jobHeap) Len() int      { return len(h) }
+func (h jobHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h jobHeap) Less(i, j int) bool {
+    if h[i].Priority != h[j].Priority {
+        return h[i].Priority > h[j].Priority
+    }
+    return h[i].SubmitTime.Before(h[j].SubmitTime)
+}
+func (h *jobHeap) Push(x interface{}) { *h = append(*h, x.(*Job)) }
+func (h *jobHeap) Pop() interface{} {
+    old := *h
+    n := len(old)
+    x := old[n-1]
+    old[n-1] = nil
+    *h = old[:n-1]
+    return x
+}
+
+type PriorityJobQueue struct {
+    h         jobHeap
+    mu        sync.Mutex
+    cond      *sync.Cond
+    closed    bool
+    processed atomic.Int64
+    failed    atomic.Int64
+}
+
+func NewPriorityJobQueue() *PriorityJobQueue {
+    pq := &PriorityJobQueue{}
+    pq.cond = sync.NewCond(&pq.mu)
+    heap.Init(&pq.h)
+    return pq
+}
+
+func (pq *PriorityJobQueue) Submit(j *Job) error {
+    pq.mu.Lock()
+    defer pq.mu.Unlock()
+    if pq.closed {
+        return fmt.Errorf("queue closed")
+    }
+    j.SubmitTime = time.Now()
+    heap.Push(&pq.h, j)
+    pq.cond.Signal()
+    return nil
+}
+
+func (pq *PriorityJobQueue) pop() (*Job, bool) {
+    pq.mu.Lock()
+    defer pq.mu.Unlock()
+    for pq.h.Len() == 0 && !pq.closed {
+        pq.cond.Wait()
+    }
+    if pq.h.Len() == 0 {
+        return nil, false
+    }
+    return heap.Pop(&pq.h).(*Job), true
+}
+
+func (pq *PriorityJobQueue) StartWorkers(n int) *sync.WaitGroup {
+    var wg sync.WaitGroup
+    for i := 0; i < n; i++ {
+        wg.Add(1)
+        workerID := i
+        go func() {
+            defer wg.Done()
+            for {
+                job, ok := pq.pop()
+                if !ok {
+                    fmt.Printf("worker %d: queue closed, exiting\n", workerID)
+                    return
+                }
+                if err := job.Fn(); err != nil {
+                    fmt.Printf("worker %d: job %s failed: %v\n", workerID, job.ID, err)
+                    pq.failed.Add(1)
+                } else {
+                    pq.processed.Add(1)
+                }
+            }
+        }()
+    }
+    return &wg
+}
+
+func (pq *PriorityJobQueue) Close() {
+    pq.mu.Lock()
+    pq.closed = true
+    pq.cond.Broadcast()
+    pq.mu.Unlock()
+}
+
+func (pq *PriorityJobQueue) Stats() (processed, failed int64) {
+    return pq.processed.Load(), pq.failed.Load()
+}
+
+func main() {
+    pq := NewPriorityJobQueue()
+    wg := pq.StartWorkers(3)
+
+    jobs := []struct {
+        id   string
+        prio int
+    }{
+        {"low-1", 1}, {"high-1", 10}, {"med-1", 5},
+        {"high-2", 10}, {"low-2", 1}, {"med-2", 5},
+        {"critical-1", 100},
+    }
+
+    for _, j := range jobs {
+        j := j
+        pq.Submit(&Job{
+            ID:       j.id,
+            Priority: j.prio,
+            Fn: func() error {
+                fmt.Printf("executing job %s (prio %d)\n", j.id, j.prio)
+                time.Sleep(10 * time.Millisecond)
+                return nil
+            },
+        })
+    }
+
+    // Wait briefly then close
+    time.Sleep(200 * time.Millisecond)
+    pq.Close()
+    wg.Wait()
+
+    processed, failed := pq.Stats()
+    fmt.Printf("processed=%d failed=%d\n", processed, failed)
+}
+```
+**Time:** O(log N) submit/pop | **Space:** O(N) queue
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Heap gives O(log N) vs O(N) for sorted slice; fine up to millions of queued jobs |
+| Edge Cases | Nil pointers in heap.Pop; zero out slice element before shrink to allow GC |
+| Error Handling | Failed jobs can be re-queued with decayed priority to prevent starvation of failures |
+| Memory | Unbounded queue: add capacity limit with backpressure (block or drop low-prio) |
+| Concurrency | sync.Cond is appropriate here; channels would require a separate goroutine to push |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    P1["Producer 1: Submit(prio=1)"] --> H["Heap (max-priority at top)"]
+    P2["Producer 2: Submit(prio=10)"] --> H
+    P3["Producer 3: Submit(prio=100)"] --> H
+    H --> W1["Worker 1: pop prio=100"]
+    H --> W2["Worker 2: pop prio=10"]
+    H --> W3["Worker 3: pop prio=1"]
+    W1 & W2 & W3 --> E["execute job.Fn()"]
+    E --> S["processed.Add(1)"]
+```
+
+### Interviewer Questions
+1. Why use `sync.Cond` instead of a channel for the worker park/wake mechanism?
+2. How do you prevent priority inversion (low-priority jobs starving)?
+3. What is the time complexity of heap.Push and heap.Pop?
+4. How would you implement job cancellation (remove a queued job before it runs)?
+5. How do you handle the case where a high-priority job takes very long and starves others?
+6. What happens if a worker panics while executing a job?
+7. How would you persist the priority queue across process restarts?
+
+### Follow-Up Questions
+1. Add job deadlines: if a job waits > Xms, promote its priority
+2. Implement job cancellation: Cancel(jobID) removes from heap
+3. Add per-priority quotas: at most 60% of workers on priority >= 10
+4. Serialize/deserialize heap to Redis on shutdown for durability
+5. Add a DLQ (dead letter queue) for jobs that fail > 3 times
+
+---
+
+## Q25: Concurrent Graph BFS Using Goroutines  [Level 5 — Interview Level]
+> **Tags:** `#graph` `#BFS` `#concurrency` `#goroutines` `#visited-set`
+
+### Problem Statement
+Given a directed graph (adjacency list), perform BFS from a start node using multiple goroutines to explore neighbors concurrently. Return nodes in BFS level order. Ensure each node is visited exactly once despite concurrent exploration.
+
+### Input / Output / Constraints
+- graph map[int][]int (adjacency list)
+- start int
+- Return [][]int (nodes per BFS level)
+- Nodes numbered 0..N-1
+- Graph may have cycles
+
+### Thought Process
+1. Level-by-level BFS: process all nodes at level L concurrently before level L+1
+2. Visited set protected by sync.Map or atomic bitset
+3. For each level: launch one goroutine per node; collect unvisited neighbors
+4. Dedup neighbors with CAS on visited set
+5. Repeat until no new nodes found
+
+### Brute Force
+```go
+// Sequential BFS
+package main
+
+import "fmt"
+
+func bfs(graph map[int][]int, start int) [][]int {
+    visited := map[int]bool{start: true}
+    levels := [][]int{}
+    current := []int{start}
+    for len(current) > 0 {
+        levels = append(levels, current)
+        var next []int
+        for _, node := range current {
+            for _, nb := range graph[node] {
+                if !visited[nb] {
+                    visited[nb] = true
+                    next = append(next, nb)
+                }
+            }
+        }
+        current = next
+    }
+    return levels
+}
+
+func main() {
+    g := map[int][]int{0: {1, 2}, 1: {3}, 2: {3, 4}, 3: {5}, 4: {5}}
+    fmt.Println(bfs(g, 0))
+}
+```
+**Time:** O(V+E) | **Space:** O(V)
+
+### Better Solution
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "sync/atomic"
+)
+
+func concurrentBFS(graph map[int][]int, start int, numNodes int) [][]int {
+    visited := make([]atomic.Bool, numNodes)
+    visited[start].Store(true)
+
+    levels := [][]int{}
+    current := []int{start}
+
+    for len(current) > 0 {
+        levels = append(levels, current)
+        nextCh := make(chan int, len(current)*10)
+        var wg sync.WaitGroup
+
+        for _, node := range current {
+            wg.Add(1)
+            node := node
+            go func() {
+                defer wg.Done()
+                for _, nb := range graph[node] {
+                    if visited[nb].CompareAndSwap(false, true) {
+                        nextCh <- nb
+                    }
+                }
+            }()
+        }
+
+        wg.Wait()
+        close(nextCh)
+
+        var next []int
+        for nb := range nextCh {
+            next = append(next, nb)
+        }
+        current = next
+    }
+    return levels
+}
+
+func main() {
+    graph := map[int][]int{
+        0: {1, 2}, 1: {3}, 2: {3, 4}, 3: {5}, 4: {5}, 5: {},
+    }
+    result := concurrentBFS(graph, 0, 6)
+    for i, level := range result {
+        fmt.Printf("Level %d: %v\n", i, level)
+    }
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "fmt"
+    "sort"
+    "sync"
+    "sync/atomic"
+)
+
+// ConcurrentBFS performs level-synchronised BFS using goroutines per node.
+// Returns nodes grouped by BFS level; order within a level is non-deterministic.
+func ConcurrentBFS(graph map[int][]int, start, numNodes int) [][]int {
+    if numNodes <= 0 {
+        return nil
+    }
+
+    // visited[i] = 1 means node i has been enqueued
+    visited := make([]atomic.Int32, numNodes)
+    if start < 0 || start >= numNodes {
+        return nil
+    }
+    visited[start].Store(1)
+
+    levels := [][]int{}
+    frontier := []int{start}
+
+    for len(frontier) > 0 {
+        // Record this level (sorted for determinism in tests)
+        level := make([]int, len(frontier))
+        copy(level, frontier)
+        sort.Ints(level)
+        levels = append(levels, level)
+
+        // Explore all nodes in frontier concurrently
+        nextCh := make(chan int, len(frontier)*8)
+        var wg sync.WaitGroup
+
+        for _, node := range frontier {
+            node := node
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                neighbors, ok := graph[node]
+                if !ok {
+                    return
+                }
+                for _, nb := range neighbors {
+                    if nb < 0 || nb >= numNodes {
+                        continue // guard against invalid nodes
+                    }
+                    // CAS: only enqueue if not yet visited
+                    if visited[nb].CompareAndSwap(0, 1) {
+                        nextCh <- nb
+                    }
+                }
+            }()
+        }
+
+        wg.Wait()
+        close(nextCh)
+
+        // Collect next frontier
+        var next []int
+        for nb := range nextCh {
+            next = append(next, nb)
+        }
+        frontier = next
+    }
+
+    return levels
+}
+
+func main() {
+    // Example: diamond graph with fan-out
+    //     0
+    //    / \
+    //   1   2
+    //  / \ / \
+    // 3   4   5
+    //      \ /
+    //       6
+    graph := map[int][]int{
+        0: {1, 2},
+        1: {3, 4},
+        2: {4, 5},
+        3: {},
+        4: {6},
+        5: {6},
+        6: {},
+    }
+
+    result := ConcurrentBFS(graph, 0, 7)
+    for i, level := range result {
+        fmt.Printf("Level %d: %v\n", i, level)
+    }
+    // Level 0: [0]
+    // Level 1: [1 2]
+    // Level 2: [3 4 5]
+    // Level 3: [6]
+
+    // Disconnected component test
+    graph2 := map[int][]int{
+        0: {1},
+        1: {},
+        2: {3}, // unreachable from 0
+        3: {},
+    }
+    result2 := ConcurrentBFS(graph2, 0, 4)
+    fmt.Println("disconnected graph from 0:", result2)
+}
+```
+**Time:** O(V+E) — same as sequential; parallelism helps on high-degree nodes | **Space:** O(V)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Parallelism most beneficial for high-degree nodes; overhead dominates for sparse graphs |
+| Edge Cases | Cycles handled by visited CAS; disconnected components not reached from start |
+| Error Handling | Invalid node IDs guarded; nil graph entries handled with ok-check |
+| Memory | Channel buffer sized generously; exact sizing requires knowing max degree |
+| Concurrency | atomic.Int32 CAS prevents double-enqueue without mutex |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["frontier = [0]"] --> B["spawn goroutine per node in frontier"]
+    B --> C["goroutine: iterate neighbors"]
+    C --> D{"visited CAS 0->1?"}
+    D -- yes --> E["send nb to nextCh"]
+    D -- no --> F["skip — already visited"]
+    E --> G["wg.Wait() + close(nextCh)"]
+    G --> H["collect next frontier"]
+    H --> I{"empty?"}
+    I -- no --> B
+    I -- yes --> J["return levels"]
+```
+
+### Interviewer Questions
+1. Why is level-synchronization (wg.Wait between levels) necessary?
+2. How does `CompareAndSwap` prevent a node from being visited twice?
+3. What is the overhead of spawning one goroutine per node vs. batching?
+4. How would you parallelize DFS instead of BFS?
+5. How do you handle a graph with 10 million nodes?
+6. Why is the channel buffer size important here?
+7. How would you distribute BFS across multiple machines?
+
+### Follow-Up Questions
+1. Return the shortest path from start to a target node
+2. Parallelize within a level but also pipeline across levels (speculative BFS)
+3. Implement concurrent topological sort for a DAG
+4. Use a worker pool of fixed size instead of one goroutine per node
+5. Add early termination: stop BFS when target node is found
+
+---
+
+## Q26: Implement errgroup from Scratch  [Level 5 — Interview Level]
+> **Tags:** `#errgroup` `#goroutines` `#context` `#error-handling` `#wait-group`
+
+### Problem Statement
+Implement `errgroup.Group` from scratch. It should:
+- `Go(fn func() error)` launches fn in a goroutine
+- `Wait()` blocks until all goroutines finish; returns first non-nil error
+- Context variant: cancel all goroutines when one returns an error
+- Concurrency limit variant: at most N goroutines run simultaneously
+
+### Input / Output / Constraints
+- Must match golang.org/x/sync/errgroup API
+- First error is returned; remaining errors are discarded
+- Context cancelled when first error occurs
+- Thread-safe
+
+### Thought Process
+1. WaitGroup to track goroutines
+2. Once flag (sync.Once) to capture only first error
+3. Context cancellation: WithCancel, cancel on first error
+4. Concurrency limit: semaphore channel
+
+### Brute Force
+```go
+// Collect all errors — not errgroup semantics
+package main
+
+import "sync"
+
+type AllErrGroup struct {
+    mu   sync.Mutex
+    errs []error
+    wg   sync.WaitGroup
+}
+
+func (g *AllErrGroup) Go(fn func() error) {
+    g.wg.Add(1)
+    go func() {
+        defer g.wg.Done()
+        if err := fn(); err != nil {
+            g.mu.Lock()
+            g.errs = append(g.errs, err)
+            g.mu.Unlock()
+        }
+    }()
+}
+```
+**Time:** O(N) | **Space:** O(N errors)
+
+### Better Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+type Group struct {
+    cancel func()
+    wg     sync.WaitGroup
+    once   sync.Once
+    err    error
+}
+
+func WithContext(ctx context.Context) (*Group, context.Context) {
+    ctx, cancel := context.WithCancel(ctx)
+    return &Group{cancel: cancel}, ctx
+}
+
+func (g *Group) Go(fn func() error) {
+    g.wg.Add(1)
+    go func() {
+        defer g.wg.Done()
+        if err := fn(); err != nil {
+            g.once.Do(func() {
+                g.err = err
+                if g.cancel != nil {
+                    g.cancel()
+                }
+            })
+        }
+    }()
+}
+
+func (g *Group) Wait() error {
+    g.wg.Wait()
+    if g.cancel != nil {
+        g.cancel()
+    }
+    return g.err
+}
+
+func main() {
+    g, ctx := WithContext(context.Background())
+
+    for i := 0; i < 5; i++ {
+        i := i
+        g.Go(func() error {
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            case <-time.After(time.Duration(i*100) * time.Millisecond):
+                if i == 2 {
+                    return fmt.Errorf("worker %d failed", i)
+                }
+                fmt.Printf("worker %d done\n", i)
+                return nil
+            }
+        })
+    }
+
+    if err := g.Wait(); err != nil {
+        fmt.Println("error:", err)
+    }
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+// ErrGroup mirrors golang.org/x/sync/errgroup with concurrency limiting.
+type ErrGroup struct {
+    cancel  context.CancelFunc
+    wg      sync.WaitGroup
+    once    sync.Once
+    err     error
+    sem     chan struct{} // nil means unlimited
+}
+
+// New creates an ErrGroup without a context.
+func New() *ErrGroup {
+    return &ErrGroup{}
+}
+
+// WithContext creates an ErrGroup with a cancellable context.
+// The context is cancelled when the first error occurs or Wait() returns.
+func WithContext(ctx context.Context) (*ErrGroup, context.Context) {
+    ctx, cancel := context.WithCancel(ctx)
+    return &ErrGroup{cancel: cancel}, ctx
+}
+
+// SetLimit sets the maximum number of goroutines that can run simultaneously.
+// Must be called before any Go() calls.
+func (g *ErrGroup) SetLimit(n int) {
+    if n <= 0 {
+        g.sem = nil
+        return
+    }
+    g.sem = make(chan struct{}, n)
+}
+
+// Go launches fn in a goroutine, respecting the concurrency limit.
+func (g *ErrGroup) Go(fn func() error) {
+    if g.sem != nil {
+        g.sem <- struct{}{} // acquire
+    }
+
+    g.wg.Add(1)
+    go func() {
+        defer g.wg.Done()
+        defer func() {
+            if g.sem != nil {
+                <-g.sem // release
+            }
+        }()
+        defer func() {
+            if r := recover(); r != nil {
+                g.once.Do(func() {
+                    g.err = fmt.Errorf("panic: %v", r)
+                    if g.cancel != nil {
+                        g.cancel()
+                    }
+                })
+            }
+        }()
+
+        if err := fn(); err != nil {
+            g.once.Do(func() {
+                g.err = err
+                if g.cancel != nil {
+                    g.cancel()
+                }
+            })
+        }
+    }()
+}
+
+// TryGo launches fn only if a semaphore slot is immediately available.
+// Returns false if the concurrency limit is reached.
+func (g *ErrGroup) TryGo(fn func() error) bool {
+    if g.sem != nil {
+        select {
+        case g.sem <- struct{}{}:
+        default:
+            return false
+        }
+    }
+
+    g.wg.Add(1)
+    go func() {
+        defer g.wg.Done()
+        defer func() {
+            if g.sem != nil {
+                <-g.sem
+            }
+        }()
+
+        if err := fn(); err != nil {
+            g.once.Do(func() {
+                g.err = err
+                if g.cancel != nil {
+                    g.cancel()
+                }
+            })
+        }
+    }()
+    return true
+}
+
+// Wait blocks until all goroutines finish and returns the first error.
+func (g *ErrGroup) Wait() error {
+    g.wg.Wait()
+    if g.cancel != nil {
+        g.cancel() // always cancel to free resources
+    }
+    return g.err
+}
+
+// --- Demo ---
+
+func slowTask(ctx context.Context, id int, failAt int) error {
+    select {
+    case <-ctx.Done():
+        fmt.Printf("task %d cancelled\n", id)
+        return ctx.Err()
+    case <-time.After(time.Duration(id*80) * time.Millisecond):
+    }
+    if id == failAt {
+        return fmt.Errorf("task %d: intentional failure", id)
+    }
+    fmt.Printf("task %d completed\n", id)
+    return nil
+}
+
+func main() {
+    fmt.Println("=== errgroup with context cancellation ===")
+    g, ctx := WithContext(context.Background())
+    g.SetLimit(3) // at most 3 concurrent
+
+    for i := 0; i < 6; i++ {
+        i := i
+        g.Go(func() error {
+            return slowTask(ctx, i, 3)
+        })
+    }
+
+    if err := g.Wait(); err != nil {
+        fmt.Println("first error:", err)
+    }
+
+    fmt.Println("\n=== errgroup with panic recovery ===")
+    g2 := New()
+    g2.Go(func() error {
+        panic("something exploded")
+    })
+    g2.Go(func() error {
+        return fmt.Errorf("normal error")
+    })
+    fmt.Println("wait result:", g2.Wait())
+}
+```
+**Time:** O(N/limit) | **Space:** O(limit) semaphore + O(1) error storage
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | SetLimit prevents goroutine explosion on large fan-outs |
+| Edge Cases | Panic recovery ensures WaitGroup counter is always decremented |
+| Error Handling | Only first error returned; use multierr if all errors needed |
+| Memory | sync.Once ensures single error write; no race condition |
+| Concurrency | cancel() in Wait() must always be called to avoid context leak |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["g.Go(fn)"] --> B{"sem != nil?"}
+    B -- yes --> C["sem <- {} (acquire or block)"]
+    B -- no --> D["wg.Add(1)"]
+    C --> D
+    D --> E["launch goroutine"]
+    E --> F["fn()"]
+    F -- "error" --> G["once.Do: store err, cancel()"]
+    F -- "nil" --> H["return"]
+    G --> I["<-sem release"]
+    H --> I
+    I --> J["wg.Done()"]
+    K["g.Wait()"] --> L["wg.Wait()"]
+    L --> M["cancel()"]
+    M --> N["return g.err"]
+```
+
+### Interviewer Questions
+1. Why use `sync.Once` instead of a mutex to store the first error?
+2. What is the difference between `Go()` and `TryGo()`?
+3. Why must `cancel()` be called in `Wait()` even when there is no error?
+4. How does the semaphore interact with `wg.Add(1)` — why must Add happen after acquire?
+5. What happens if all goroutines succeed but cancel was called externally?
+6. How would you collect all errors instead of just the first?
+7. What is the behavior of `golang.org/x/sync/errgroup` when `SetLimit` is not called?
+
+### Follow-Up Questions
+1. Implement `errgroup` with ordered result collection (results indexed by submission order)
+2. Add `OnError(fn func(error))` callback for per-error logging
+3. Implement a pipeline: each stage is an errgroup; output of one feeds the next
+4. Add timeout per goroutine (not just overall context)
+5. Implement errgroup that retries failed goroutines up to N times with backoff
+
+---
+
+## Q27: Detect Goroutine Leaks at Runtime with pprof  [Level 5 — Interview Level]
+> **Tags:** `#goroutine-leak` `#pprof` `#runtime` `#debugging` `#profiling`
+
+### Problem Statement
+Implement a goroutine leak detector that:
+1. Snapshots the goroutine count before and after a test
+2. Reports leaked goroutines with their stack traces
+3. Works as test helper (goleak pattern)
+4. Demonstrate a real leak and how to detect it
+
+### Input / Output / Constraints
+- `StartMonitor()` captures baseline goroutine count + stacks
+- `Check()` compares current goroutines to baseline; reports new goroutines
+- Must show stack trace of leaked goroutines
+- Demonstrate with: HTTP handler goroutine leak, channel leak
+
+### Thought Process
+1. `runtime.Stack(buf, all=true)` captures all goroutine stacks as text
+2. Parse goroutine IDs from stack dump
+3. Compare ID sets before/after; any ID in "after" but not "before" is a leak
+4. For production: use `runtime/pprof` goroutine profile
+
+### Brute Force
+```go
+// Just check count — no stack info
+package main
+
+import (
+    "fmt"
+    "runtime"
+)
+
+func goroutineCount() int {
+    return runtime.NumGoroutine()
+}
+
+func main() {
+    before := goroutineCount()
+    // ... run code ...
+    after := goroutineCount()
+    if after > before {
+        fmt.Printf("possible leak: %d new goroutines\n", after-before)
+    }
+}
+```
+**Time:** O(1) | **Space:** O(1) — no stack info
+
+### Better Solution
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "runtime"
+    "strconv"
+    "strings"
+)
+
+func captureGoroutineIDs() map[int]bool {
+    buf := make([]byte, 1<<20)
+    n := runtime.Stack(buf, true)
+    stacks := string(buf[:n])
+    ids := make(map[int]bool)
+    for _, line := range strings.Split(stacks, "\n") {
+        if strings.HasPrefix(line, "goroutine ") {
+            fields := strings.Fields(line)
+            if len(fields) >= 2 {
+                id, _ := strconv.Atoi(fields[1])
+                ids[id] = true
+            }
+        }
+    }
+    return ids
+}
+
+func checkLeaks(before map[int]bool) []string {
+    buf := make([]byte, 1<<20)
+    n := runtime.Stack(buf, true)
+    stacks := string(buf[:n])
+
+    var leaked []string
+    blocks := strings.Split(stacks, "\n\n")
+    for _, block := range blocks {
+        if !strings.HasPrefix(block, "goroutine ") {
+            continue
+        }
+        fields := strings.Fields(block)
+        if len(fields) < 2 {
+            continue
+        }
+        id, _ := strconv.Atoi(fields[1])
+        if !before[id] {
+            leaked = append(leaked, block)
+        }
+    }
+    return leaked
+}
+
+func leakyFunction() {
+    ch := make(chan int) // unbuffered, never sent to
+    go func() {
+        <-ch // blocks forever
+    }()
+}
+
+func main() {
+    before := captureGoroutineIDs()
+    leakyFunction()
+
+    // small wait for goroutine to start
+    runtime.Gosched()
+
+    leaks := checkLeaks(before)
+    if len(leaks) > 0 {
+        fmt.Printf("detected %d leaked goroutine(s):\n", len(leaks))
+        for _, l := range leaks {
+            fmt.Println(strings.TrimSpace(l))
+            fmt.Println("---")
+        }
+    }
+
+    // Suppress unused import
+    _ = bytes.NewBuffer
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "net/http"
+    _ "net/http/pprof" // registers /debug/pprof routes
+    "runtime"
+    "runtime/pprof"
+    "sort"
+    "strconv"
+    "strings"
+    "time"
+)
+
+// LeakDetector captures a goroutine snapshot and compares later.
+type LeakDetector struct {
+    baseline    map[int]string // id -> first line of stack
+    baselineIDs map[int]bool
+}
+
+func NewLeakDetector() *LeakDetector {
+    ld := &LeakDetector{}
+    ld.snapshot()
+    return ld
+}
+
+func (ld *LeakDetector) snapshot() {
+    buf := make([]byte, 4<<20)
+    n := runtime.Stack(buf, true)
+    ld.baseline = parseGoroutineStacks(string(buf[:n]))
+    ld.baselineIDs = make(map[int]bool, len(ld.baseline))
+    for id := range ld.baseline {
+        ld.baselineIDs[id] = true
+    }
+}
+
+func parseGoroutineStacks(dump string) map[int]string {
+    result := make(map[int]string)
+    blocks := strings.Split(dump, "\n\n")
+    for _, block := range blocks {
+        block = strings.TrimSpace(block)
+        if !strings.HasPrefix(block, "goroutine ") {
+            continue
+        }
+        lines := strings.SplitN(block, "\n", 2)
+        header := lines[0]
+        fields := strings.Fields(header)
+        if len(fields) < 2 {
+            continue
+        }
+        id, err := strconv.Atoi(fields[1])
+        if err != nil {
+            continue
+        }
+        result[id] = block
+    }
+    return result
+}
+
+type LeakReport struct {
+    GoroutineID int
+    Stack       string
+    State       string
+}
+
+func (ld *LeakDetector) Check() []LeakReport {
+    // give goroutines a moment to settle
+    time.Sleep(50 * time.Millisecond)
+
+    buf := make([]byte, 4<<20)
+    n := runtime.Stack(buf, true)
+    current := parseGoroutineStacks(string(buf[:n]))
+
+    var leaks []LeakReport
+    for id, stack := range current {
+        if ld.baselineIDs[id] {
+            continue
+        }
+        // Extract state from header line (e.g., "goroutine 42 [chan receive]:")
+        state := ""
+        header := strings.SplitN(stack, "\n", 2)[0]
+        if start := strings.Index(header, "["); start != -1 {
+            if end := strings.Index(header, "]"); end != -1 {
+                state = header[start+1 : end]
+            }
+        }
+        leaks = append(leaks, LeakReport{GoroutineID: id, Stack: stack, State: state})
+    }
+    sort.Slice(leaks, func(i, j int) bool {
+        return leaks[i].GoroutineID < leaks[j].GoroutineID
+    })
+    return leaks
+}
+
+// pprof-based goroutine dump (production approach)
+func DumpGoroutineProfile(w *bytes.Buffer) {
+    p := pprof.Lookup("goroutine")
+    p.WriteTo(w, 2) // debug=2 gives full stack traces
+}
+
+// --- Leak examples ---
+
+func leakOnBlockedChannel() {
+    ch := make(chan int) // never closed, never sent
+    go func() {
+        val := <-ch // blocked forever
+        _ = val
+    }()
+}
+
+func leakOnHTTPWithoutTimeout() {
+    // Goroutine waits forever for slow server response
+    go func() {
+        client := &http.Client{} // no timeout
+        // In a real scenario this would hang: client.Get("http://slow-server")
+        _ = client
+        time.Sleep(24 * time.Hour) // simulate stuck HTTP call
+    }()
+}
+
+func leakOnInfiniteLoop(stop <-chan struct{}) {
+    go func() {
+        for {
+            select {
+            case <-stop:
+                return
+            default:
+                time.Sleep(10 * time.Millisecond)
+            }
+        }
+    }()
+}
+
+func main() {
+    fmt.Println("=== Goroutine Leak Detection Demo ===\n")
+
+    // --- Demo 1: blocked channel leak ---
+    ld1 := NewLeakDetector()
+    leakOnBlockedChannel()
+    leaks := ld1.Check()
+    fmt.Printf("Demo 1 (blocked channel): %d leak(s) detected\n", len(leaks))
+    for _, l := range leaks {
+        fmt.Printf("  goroutine %d [%s]\n  %s\n\n", l.GoroutineID, l.State,
+            strings.SplitN(l.Stack, "\n", 4)[1]) // show first stack frame
+    }
+
+    // --- Demo 2: goroutine with stop channel (no leak) ---
+    ld2 := NewLeakDetector()
+    stop := make(chan struct{})
+    leakOnInfiniteLoop(stop)
+    close(stop) // properly stopped
+    time.Sleep(20 * time.Millisecond)
+    leaks2 := ld2.Check()
+    fmt.Printf("Demo 2 (properly stopped): %d leak(s) detected\n", len(leaks2))
+
+    // --- Demo 3: pprof goroutine dump ---
+    fmt.Println("\n=== pprof goroutine profile (first 500 chars) ===")
+    var buf bytes.Buffer
+    DumpGoroutineProfile(&buf)
+    s := buf.String()
+    if len(s) > 500 {
+        s = s[:500] + "..."
+    }
+    fmt.Println(s)
+
+    // pprof HTTP endpoint (in a real server)
+    go func() {
+        http.ListenAndServe(":6060", nil) // access /debug/pprof/goroutine
+    }()
+    fmt.Println("\nSee http://localhost:6060/debug/pprof/goroutine for live goroutine profiles")
+}
+```
+**Time:** O(G) where G = goroutine count | **Space:** O(G * stack_depth)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Runtime.Stack is O(G); expensive at thousands of goroutines |
+| Edge Cases | Race between goroutine start and snapshot; use retry with backoff |
+| Error Handling | pprof endpoint should be behind auth in production |
+| Memory | 4MB buffer may be insufficient; use dynamic sizing |
+| Concurrency | Use `github.com/uber-go/goleak` for production test helpers |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["NewLeakDetector()"] --> B["runtime.Stack(all=true)"]
+    B --> C["parse goroutine IDs -> baseline set"]
+    D["code under test runs"] --> E["goroutines may leak"]
+    F["ld.Check()"] --> G["runtime.Stack(all=true)"]
+    G --> H["parse current goroutine IDs"]
+    H --> I{"ID in baseline?"}
+    I -- no --> J["leak: capture state + stack"]
+    I -- yes --> K["expected goroutine, skip"]
+    J --> L["return []LeakReport"]
+```
+
+### Interviewer Questions
+1. What is the difference between `runtime.Stack` and `runtime/pprof` goroutine profile?
+2. Why is polling goroutine count insufficient to detect leaks?
+3. How does `uber-go/goleak` filter known background goroutines (e.g., runtime finalizer)?
+4. What goroutine states indicate a definite leak vs. a transient busy goroutine?
+5. How would you detect goroutine leaks in a production system without test helpers?
+6. What is the performance cost of calling `runtime.Stack(buf, true)`?
+7. How does `go tool pprof` help analyze goroutine profiles?
+
+### Follow-Up Questions
+1. Write a test helper using `goleak.VerifyNone(t)` to assert no leaks after each test
+2. Add HTTP middleware that exposes a `/debug/goroutines` endpoint with live stack dumps
+3. Implement a leak detector that fires an alert (Prometheus metric) when goroutine count grows >20% over baseline
+4. How would you detect goroutines stuck in the same state for > 30 seconds?
+5. Integrate leak detection into CI: fail the pipeline if goroutine count grows
+
+---
+## Q28: Production Worker Pool with Metrics, Draining, Graceful Stop  [Level 6 — Production]
+> **Tags:** `#worker-pool` `#metrics` `#graceful-stop` `#draining` `#production`
+
+### Problem Statement
+Build a production-grade worker pool that: tracks queue depth, active workers, processed/failed counts; drains all queued jobs before stopping; respects a shutdown deadline; exposes Prometheus-compatible metrics; and logs slow jobs.
+
+### Input / Output / Constraints
+- Submit(job) adds to queue; returns error if pool is stopping
+- Stop(deadline) drains queue and waits for workers, up to deadline
+- Metrics: queue_depth, active_workers, jobs_processed, jobs_failed, job_duration_seconds
+- Slow job threshold: log any job taking > 500ms
+- Thread-safe; no panics from worker failures
+
+### Thought Process
+1. Buffered job channel as queue
+2. WaitGroup for active workers
+3. atomic counters for metrics
+4. On Stop: close input, set stopped flag, drain in workers' select
+5. Deadline via context.WithTimeout wrapping wg.Wait
+
+### Brute Force
+```go
+// Minimal pool — no metrics, no drain
+package main
+
+import "sync"
+
+type Pool struct {
+    jobs chan func()
+    wg   sync.WaitGroup
+}
+
+func (p *Pool) Submit(f func()) { p.jobs <- f }
+func (p *Pool) Stop()           { close(p.jobs); p.wg.Wait() }
+```
+**Time:** O(1) submit | **Space:** O(queue)
+
+### Better Solution
+See Best Solution — incremental build adds little value here.
+
+### Best Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type Job struct {
+    ID  string
+    Fn  func() error
+}
+
+type Metrics struct {
+    QueueDepth    atomic.Int64
+    ActiveWorkers atomic.Int64
+    Processed     atomic.Int64
+    Failed        atomic.Int64
+    TotalDuration atomic.Int64 // nanoseconds
+}
+
+func (m *Metrics) AvgDurationMs() float64 {
+    p := m.Processed.Load()
+    if p == 0 {
+        return 0
+    }
+    return float64(m.TotalDuration.Load()) / float64(p) / 1e6
+}
+
+func (m *Metrics) Snapshot() string {
+    return fmt.Sprintf(
+        "queue=%d active=%d processed=%d failed=%d avg_ms=%.2f",
+        m.QueueDepth.Load(),
+        m.ActiveWorkers.Load(),
+        m.Processed.Load(),
+        m.Failed.Load(),
+        m.AvgDurationMs(),
+    )
+}
+
+type WorkerPool struct {
+    jobs            chan Job
+    wg              sync.WaitGroup
+    stopped         atomic.Bool
+    metrics         Metrics
+    slowThreshold   time.Duration
+    numWorkers      int
+}
+
+func NewWorkerPool(numWorkers, queueSize int, slowThreshold time.Duration) *WorkerPool {
+    p := &WorkerPool{
+        jobs:          make(chan Job, queueSize),
+        slowThreshold: slowThreshold,
+        numWorkers:    numWorkers,
+    }
+    for i := 0; i < numWorkers; i++ {
+        p.wg.Add(1)
+        go p.worker(i)
+    }
+    return p
+}
+
+func (p *WorkerPool) Submit(job Job) error {
+    if p.stopped.Load() {
+        return fmt.Errorf("pool is stopping: job %s rejected", job.ID)
+    }
+    select {
+    case p.jobs <- job:
+        p.metrics.QueueDepth.Add(1)
+        return nil
+    default:
+        return fmt.Errorf("queue full: job %s rejected", job.ID)
+    }
+}
+
+func (p *WorkerPool) worker(id int) {
+    defer p.wg.Done()
+    for job := range p.jobs {
+        p.metrics.QueueDepth.Add(-1)
+        p.metrics.ActiveWorkers.Add(1)
+
+        start := time.Now()
+        err := p.runJob(job)
+        dur := time.Since(start)
+
+        p.metrics.ActiveWorkers.Add(-1)
+        p.metrics.TotalDuration.Add(dur.Nanoseconds())
+
+        if err != nil {
+            p.metrics.Failed.Add(1)
+            log.Printf("[worker %d] job %s FAILED in %s: %v", id, job.ID, dur, err)
+        } else {
+            p.metrics.Processed.Add(1)
+        }
+
+        if dur > p.slowThreshold {
+            log.Printf("[worker %d] SLOW job %s took %s", id, job.ID, dur)
+        }
+    }
+    log.Printf("[worker %d] exiting", id)
+}
+
+func (p *WorkerPool) runJob(job Job) (err error) {
+    defer func() {
+        if r := recover(); r != nil {
+            err = fmt.Errorf("panic: %v", r)
+        }
+    }()
+    return job.Fn()
+}
+
+// Stop signals no new jobs, drains the queue, waits for workers up to deadline.
+func (p *WorkerPool) Stop(deadline time.Duration) error {
+    p.stopped.Store(true)
+    close(p.jobs) // workers drain remaining jobs, then exit
+
+    done := make(chan struct{})
+    go func() {
+        p.wg.Wait()
+        close(done)
+    }()
+
+    select {
+    case <-done:
+        log.Println("worker pool: graceful shutdown complete —", p.metrics.Snapshot())
+        return nil
+    case <-time.After(deadline):
+        log.Println("worker pool: shutdown deadline exceeded —", p.metrics.Snapshot())
+        return fmt.Errorf("shutdown deadline exceeded")
+    }
+}
+
+func (p *WorkerPool) Metrics() *Metrics { return &p.metrics }
+
+func main() {
+    pool := NewWorkerPool(4, 100, 200*time.Millisecond)
+
+    // Submit 20 jobs
+    var submitWg sync.WaitGroup
+    for i := 0; i < 20; i++ {
+        i := i
+        submitWg.Add(1)
+        go func() {
+            defer submitWg.Done()
+            err := pool.Submit(Job{
+                ID: fmt.Sprintf("job-%02d", i),
+                Fn: func() error {
+                    d := time.Duration(i%5) * 100 * time.Millisecond
+                    time.Sleep(d)
+                    if i == 7 {
+                        return fmt.Errorf("simulated error")
+                    }
+                    return nil
+                },
+            })
+            if err != nil {
+                log.Println("submit error:", err)
+            }
+        }()
+    }
+    submitWg.Wait()
+
+    // Periodic metrics logging
+    ctx, cancel := context.WithCancel(context.Background())
+    go func() {
+        ticker := time.NewTicker(100 * time.Millisecond)
+        defer ticker.Stop()
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case <-ticker.C:
+                fmt.Println("metrics:", pool.Metrics().Snapshot())
+            }
+        }
+    }()
+
+    if err := pool.Stop(5 * time.Second); err != nil {
+        log.Println("stop error:", err)
+    }
+    cancel()
+    fmt.Println("final metrics:", pool.Metrics().Snapshot())
+}
+```
+**Time:** O(1) submit, O(N/workers) total | **Space:** O(queue size)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Tune queue size and worker count independently; monitor queue_depth metric |
+| Edge Cases | Worker panic recovery prevents pool crash; failed job increments counter |
+| Error Handling | Rejected jobs (full queue, stopped) return errors; callers decide retry |
+| Memory | Large job payloads: store by pointer or reference to avoid queue memory bloat |
+| Concurrency | close(jobs) is the signal to drain; workers exit for-range naturally |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["Submit(job)"] --> B{"stopped?"}
+    B -- yes --> C["return error"]
+    B -- no --> D{"queue full?"}
+    D -- yes --> E["return error (backpressure)"]
+    D -- no --> F["jobs <- job, QueueDepth++"]
+    F --> G["worker: range jobs"]
+    G --> H["QueueDepth--, ActiveWorkers++"]
+    H --> I["runJob() with recover"]
+    I -- error --> J["Failed++"]
+    I -- ok --> K["Processed++"]
+    I --> L["TotalDuration += dur"]
+    L --> M{"dur > slowThreshold?"}
+    M -- yes --> N["log SLOW"]
+    M --> G
+    O["Stop(deadline)"] --> P["stopped=true, close(jobs)"]
+    P --> Q["workers drain then exit"]
+    Q --> R["wg.Wait() or timeout"]
+```
+
+### Interviewer Questions
+1. Why use `close(jobs)` to signal drain rather than a separate done channel?
+2. How do you prevent a burst of submissions from exhausting memory?
+3. How would you implement worker auto-scaling based on queue depth?
+4. What is the difference between backpressure (block) and shedding (drop) for full queues?
+5. How would you expose these metrics to Prometheus?
+6. What happens if Stop() is called while Submit() is in progress?
+7. How do you test the graceful drain behavior in unit tests?
+
+### Follow-Up Questions
+1. Add dynamic worker scaling: spawn more workers when queue > 50%, reduce when < 10%
+2. Implement per-job timeout: cancel jobs that take > N seconds
+3. Add retry logic with exponential backoff for failed jobs
+4. Expose /metrics HTTP endpoint with Prometheus text format
+5. Implement job priority inside the worker pool using a heap-backed channel
+
+---
+
+## Q29: Goroutine Pool That Auto-Scales Based on Queue Depth  [Level 6 — Production]
+> **Tags:** `#auto-scaling` `#goroutine-pool` `#queue-depth` `#adaptive` `#production`
+
+### Problem Statement
+Build a goroutine pool that dynamically adjusts worker count based on queue depth:
+- Scale up when queue depth > high-water mark
+- Scale down (idle workers exit) when queue is empty for > idle timeout
+- Respect min and max worker bounds
+- Provide current worker count metric
+
+### Input / Output / Constraints
+- minWorkers, maxWorkers int
+- highWaterMark int (queue depth to trigger scale-up)
+- idleTimeout time.Duration
+- Submit(job func()) error
+- Workers exit after being idle for idleTimeout
+- Thread-safe scaling
+
+### Thought Process
+1. Workers select on job channel with a timeout for idle detection
+2. Scaler goroutine monitors queue depth and spawns workers up to max
+3. Workers atomically decrement worker count on exit
+4. Scaler checks high-water mark every tick
+
+### Brute Force
+```go
+// Fixed pool — no scaling
+package main
+
+type FixedPool struct{ jobs chan func() }
+func (p *FixedPool) Submit(f func()) { p.jobs <- f }
+```
+**Time:** O(1) | **Space:** O(queue)
+
+### Better Solution
+```go
+// Auto-scaling core without full production features
+package main
+
+import (
+    "fmt"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type AutoPool struct {
+    jobs        chan func()
+    minWorkers  int
+    maxWorkers  int
+    hwm         int
+    idleTimeout time.Duration
+    workerCount atomic.Int32
+    mu          sync.Mutex
+    stopped     atomic.Bool
+    wg          sync.WaitGroup
+}
+
+func NewAutoPool(min, max, hwm int, idle time.Duration) *AutoPool {
+    p := &AutoPool{
+        jobs:        make(chan func(), hwm*2),
+        minWorkers:  min,
+        maxWorkers:  max,
+        hwm:         hwm,
+        idleTimeout: idle,
+    }
+    for i := 0; i < min; i++ {
+        p.startWorker()
+    }
+    go p.scaler()
+    return p
+}
+
+func (p *AutoPool) startWorker() {
+    p.workerCount.Add(1)
+    p.wg.Add(1)
+    go func() {
+        defer p.wg.Done()
+        defer p.workerCount.Add(-1)
+        timer := time.NewTimer(p.idleTimeout)
+        defer timer.Stop()
+        for {
+            select {
+            case job, ok := <-p.jobs:
+                if !ok {
+                    return
+                }
+                if !timer.Stop() { select { case <-timer.C: default: } }
+                timer.Reset(p.idleTimeout)
+                job()
+            case <-timer.C:
+                // exit if above min
+                if int(p.workerCount.Load()) > p.minWorkers {
+                    return
+                }
+                timer.Reset(p.idleTimeout)
+            }
+        }
+    }()
+}
+
+func (p *AutoPool) scaler() {
+    ticker := time.NewTicker(50 * time.Millisecond)
+    defer ticker.Stop()
+    for range ticker.C {
+        if p.stopped.Load() {
+            return
+        }
+        depth := len(p.jobs)
+        current := int(p.workerCount.Load())
+        if depth > p.hwm && current < p.maxWorkers {
+            toAdd := min(p.maxWorkers-current, depth/p.hwm)
+            for i := 0; i < toAdd; i++ {
+                p.startWorker()
+            }
+        }
+    }
+}
+
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
+func (p *AutoPool) Submit(f func()) error {
+    if p.stopped.Load() {
+        return fmt.Errorf("pool stopped")
+    }
+    select {
+    case p.jobs <- f:
+        return nil
+    default:
+        return fmt.Errorf("queue full")
+    }
+}
+
+func (p *AutoPool) Stop() {
+    p.stopped.Store(true)
+    close(p.jobs)
+    p.wg.Wait()
+}
+
+func (p *AutoPool) WorkerCount() int { return int(p.workerCount.Load()) }
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type ScalingPool struct {
+    jobs        chan func()
+    minWorkers  int
+    maxWorkers  int
+    hwm         int          // high-water mark: scale up above this depth
+    lwm         int          // low-water mark: scale down below this depth
+    idleTimeout time.Duration
+    scaleUp     time.Duration // cooldown between scale-ups
+
+    workerCount   atomic.Int32
+    stopped       atomic.Bool
+    wg            sync.WaitGroup
+    lastScaleUp   time.Time
+    scaleMu       sync.Mutex
+
+    // metrics
+    jobsProcessed atomic.Int64
+    peakWorkers   atomic.Int32
+}
+
+func NewScalingPool(min, max, hwm int, idleTimeout, scaleUpCooldown time.Duration) *ScalingPool {
+    p := &ScalingPool{
+        jobs:        make(chan func(), max*10),
+        minWorkers:  min,
+        maxWorkers:  max,
+        hwm:         hwm,
+        lwm:         hwm / 3,
+        idleTimeout: idleTimeout,
+        scaleUp:     scaleUpCooldown,
+    }
+    for i := 0; i < min; i++ {
+        p.spawnWorker()
+    }
+    go p.autoscaler()
+    return p
+}
+
+func (p *ScalingPool) spawnWorker() {
+    n := p.workerCount.Add(1)
+    if int(n) > int(p.peakWorkers.Load()) {
+        p.peakWorkers.Store(n)
+    }
+    p.wg.Add(1)
+    go p.workerLoop()
+}
+
+func (p *ScalingPool) workerLoop() {
+    defer p.wg.Done()
+    defer p.workerCount.Add(-1)
+
+    idleTimer := time.NewTimer(p.idleTimeout)
+    defer idleTimer.Stop()
+
+    for {
+        select {
+        case job, ok := <-p.jobs:
+            if !ok {
+                return // channel closed: drain complete
+            }
+            // Reset idle timer
+            if !idleTimer.Stop() {
+                select { case <-idleTimer.C: default: }
+            }
+            idleTimer.Reset(p.idleTimeout)
+
+            func() {
+                defer func() {
+                    if r := recover(); r != nil {
+                        log.Printf("worker panic: %v", r)
+                    }
+                }()
+                job()
+            }()
+            p.jobsProcessed.Add(1)
+
+        case <-idleTimer.C:
+            // Exit if above minimum; otherwise wait again
+            if int(p.workerCount.Load()) > p.minWorkers {
+                log.Printf("worker idle timeout: scaling down (count now %d)", p.workerCount.Load()-1)
+                return
+            }
+            idleTimer.Reset(p.idleTimeout)
+        }
+    }
+}
+
+func (p *ScalingPool) autoscaler() {
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ticker.C:
+            if p.stopped.Load() {
+                return
+            }
+            p.evaluateScaling()
+        }
+    }
+}
+
+func (p *ScalingPool) evaluateScaling() {
+    depth := len(p.jobs)
+    current := int(p.workerCount.Load())
+
+    if depth > p.hwm && current < p.maxWorkers {
+        p.scaleMu.Lock()
+        defer p.scaleMu.Unlock()
+        if time.Since(p.lastScaleUp) < p.scaleUp {
+            return // cooldown
+        }
+        // Scale up by 25% of max, capped
+        toAdd := p.maxWorkers / 4
+        if toAdd < 1 { toAdd = 1 }
+        if current+toAdd > p.maxWorkers {
+            toAdd = p.maxWorkers - current
+        }
+        for i := 0; i < toAdd; i++ {
+            p.spawnWorker()
+        }
+        p.lastScaleUp = time.Now()
+        log.Printf("autoscaler: scaled UP to %d workers (queue=%d)", p.workerCount.Load(), depth)
+    }
+}
+
+func (p *ScalingPool) Submit(job func()) error {
+    if p.stopped.Load() {
+        return fmt.Errorf("pool is stopped")
+    }
+    select {
+    case p.jobs <- job:
+        return nil
+    default:
+        return fmt.Errorf("queue full (depth=%d)", len(p.jobs))
+    }
+}
+
+func (p *ScalingPool) Stop(deadline time.Duration) error {
+    p.stopped.Store(true)
+    close(p.jobs)
+
+    done := make(chan struct{})
+    go func() { p.wg.Wait(); close(done) }()
+    select {
+    case <-done:
+        fmt.Printf("pool stopped: processed=%d peak_workers=%d\n",
+            p.jobsProcessed.Load(), p.peakWorkers.Load())
+        return nil
+    case <-time.After(deadline):
+        return fmt.Errorf("stop deadline exceeded")
+    }
+}
+
+func (p *ScalingPool) Stats() string {
+    return fmt.Sprintf("workers=%d queue=%d processed=%d peak=%d",
+        p.workerCount.Load(), len(p.jobs),
+        p.jobsProcessed.Load(), p.peakWorkers.Load())
+}
+
+func main() {
+    pool := NewScalingPool(2, 20, 10, 500*time.Millisecond, 200*time.Millisecond)
+
+    // Phase 1: light load
+    fmt.Println("Phase 1: light load")
+    for i := 0; i < 5; i++ {
+        pool.Submit(func() { time.Sleep(50 * time.Millisecond) })
+    }
+    time.Sleep(300 * time.Millisecond)
+    fmt.Println("stats:", pool.Stats())
+
+    // Phase 2: burst load
+    fmt.Println("Phase 2: burst load")
+    for i := 0; i < 50; i++ {
+        if err := pool.Submit(func() { time.Sleep(200 * time.Millisecond) }); err != nil {
+            log.Println("submit error:", err)
+        }
+    }
+    time.Sleep(500 * time.Millisecond)
+    fmt.Println("stats:", pool.Stats())
+
+    // Phase 3: idle — workers should scale down
+    fmt.Println("Phase 3: idle (waiting for scale-down)")
+    time.Sleep(700 * time.Millisecond)
+    fmt.Println("stats:", pool.Stats())
+
+    pool.Stop(5 * time.Second)
+}
+```
+**Time:** O(1) submit, O(queue) drain | **Space:** O(maxWorkers + queue)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Cooldown prevents oscillation (thrashing between scale-up/down) |
+| Edge Cases | idleTimeout reset must drain timer channel to avoid spurious immediate fire |
+| Error Handling | Queue full returns error; caller implements backpressure (wait/retry/shed) |
+| Memory | Idle worker goroutines hold stack (~2KB each); scale-down frees them |
+| Concurrency | workerCount atomic ensures accurate headcount despite concurrent spawn/exit |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["autoscaler tick 100ms"] --> B{"queue > HWM?"}
+    B -- yes --> C{"current < max AND cooldown passed?"}
+    C -- yes --> D["spawnWorker() * N"]
+    C -- no --> E["wait"]
+    B -- no --> E
+    F["workerLoop"] --> G{"select jobs/idleTimer"}
+    G -- "job" --> H["reset idle timer, execute, processed++"]
+    G -- "idle timeout" --> I{"count > min?"}
+    I -- yes --> J["return: scale down"]
+    I -- no --> K["reset timer, keep alive"]
+    H --> G
+```
+
+### Interviewer Questions
+1. What is the risk of scaling up too aggressively? How does cooldown help?
+2. How do you prevent a thundering herd when many workers are spawned simultaneously?
+3. How does `timer.Stop() + drain` idiom work and why is it necessary?
+4. What is the difference between high-water mark and low-water mark based scaling?
+5. How would you implement target utilization scaling (e.g., keep workers 70% busy)?
+6. What happens if `spawnWorker()` is called from multiple goroutines simultaneously?
+7. How would you expose auto-scaling events as structured log or metrics?
+
+### Follow-Up Questions
+1. Add a scale-down cooldown to mirror the scale-up cooldown
+2. Implement target-utilization scaling: scale to maintain 75% worker utilization
+3. Add Prometheus gauge `worker_pool_size` and histogram `job_duration`
+4. Implement circuit breaker: stop accepting jobs if error rate > 50% over last 100 jobs
+5. Allow per-job priority so high-priority jobs skip to the front when burst occurs
+
+---
+
+## Q30: Concurrent Request Deduplication (Singleflight Pattern)  [Level 6 — Production]
+> **Tags:** `#singleflight` `#deduplication` `#goroutines` `#cache` `#concurrent`
+
+### Problem Statement
+Multiple goroutines simultaneously request the same expensive resource (DB query, external API). Instead of N duplicate calls going out, collapse them into a single in-flight call; all waiters share the result. Implement singleflight from scratch and demonstrate cache stampede prevention.
+
+### Input / Output / Constraints
+- `Do(key string, fn func() (interface{}, error)) (interface{}, error, bool)`
+- Returns: value, error, shared (true if result came from in-flight call)
+- All callers with same key while a call is in flight get the same result
+- After the call completes, the next call starts a new in-flight request
+
+### Thought Process
+1. Map from key -> call struct (result chan, refs)
+2. First caller for a key: create call, launch goroutine, add to map
+3. Subsequent callers: find existing call, wait on same channel
+4. On completion: broadcast result to all waiters, remove from map
+
+### Brute Force
+```go
+// No dedup — all callers hit the DB
+package main
+
+import "time"
+
+func fetchFromDB(key string) (string, error) {
+    time.Sleep(100 * time.Millisecond) // expensive
+    return "value:" + key, nil
+}
+```
+**Time:** O(N) DB calls for N concurrent requests | **Space:** O(1)
+
+### Better Solution
+```go
+package main
+
+import "sync"
+
+type call struct {
+    wg  sync.WaitGroup
+    val interface{}
+    err error
+}
+
+type SingleFlight struct {
+    mu sync.Mutex
+    m  map[string]*call
+}
+
+func (sf *SingleFlight) Do(key string, fn func() (interface{}, error)) (interface{}, error, bool) {
+    sf.mu.Lock()
+    if sf.m == nil {
+        sf.m = make(map[string]*call)
+    }
+    if c, ok := sf.m[key]; ok {
+        sf.mu.Unlock()
+        c.wg.Wait()
+        return c.val, c.err, true // shared
+    }
+    c := new(call)
+    c.wg.Add(1)
+    sf.m[key] = c
+    sf.mu.Unlock()
+
+    c.val, c.err = fn()
+    c.wg.Done()
+
+    sf.mu.Lock()
+    delete(sf.m, key)
+    sf.mu.Unlock()
+
+    return c.val, c.err, false
+}
+```
+**Time:** O(1) per Do call | **Space:** O(in-flight keys)
+
+### Best Solution
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type Result struct {
+    Val    interface{}
+    Err    error
+    Shared bool // true if this result was shared from an in-flight call
+}
+
+type call struct {
+    done chan struct{} // closed when result is ready
+    val  interface{}
+    err  error
+    refs int32 // number of waiters (atomic)
+}
+
+// Group implements singleflight with per-call metrics.
+type Group struct {
+    mu sync.Mutex
+    m  map[string]*call
+
+    // metrics
+    totalCalls  atomic.Int64
+    sharedHits  atomic.Int64
+    inFlightMax atomic.Int32
+}
+
+func NewGroup() *Group {
+    return &Group{m: make(map[string]*call)}
+}
+
+// Do executes fn only once per key for concurrent callers.
+// Returns (value, error, shared).
+func (g *Group) Do(key string, fn func() (interface{}, error)) (interface{}, error, bool) {
+    g.totalCalls.Add(1)
+
+    g.mu.Lock()
+    if c, ok := g.m[key]; ok {
+        // Another call is in flight for this key
+        atomic.AddInt32(&c.refs, 1)
+        inFlight := int32(len(g.m))
+        g.mu.Unlock()
+
+        if inFlight > g.inFlightMax.Load() {
+            g.inFlightMax.Store(inFlight)
+        }
+
+        <-c.done // wait for result
+        g.sharedHits.Add(1)
+        return c.val, c.err, true
+    }
+
+    // First caller for this key
+    c := &call{
+        done: make(chan struct{}),
+        refs: 1,
+    }
+    g.m[key] = c
+    g.mu.Unlock()
+
+    // Execute the function
+    c.val, c.err = g.runSafe(fn)
+
+    // Broadcast result to all waiters
+    close(c.done)
+
+    // Remove from map
+    g.mu.Lock()
+    delete(g.m, key)
+    g.mu.Unlock()
+
+    return c.val, c.err, false
+}
+
+func (g *Group) runSafe(fn func() (interface{}, error)) (val interface{}, err error) {
+    defer func() {
+        if r := recover(); r != nil {
+            err = fmt.Errorf("singleflight panic: %v", r)
+        }
+    }()
+    return fn()
+}
+
+// DoChan is a non-blocking variant that returns a channel.
+func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result {
+    ch := make(chan Result, 1)
+    go func() {
+        v, err, shared := g.Do(key, fn)
+        ch <- Result{Val: v, Err: err, Shared: shared}
+    }()
+    return ch
+}
+
+func (g *Group) Stats() string {
+    return fmt.Sprintf("total=%d shared=%d peak_inflight=%d",
+        g.totalCalls.Load(), g.sharedHits.Load(), g.inFlightMax.Load())
+}
+
+// --- Demo ---
+
+var dbCallCount atomic.Int32
+
+func expensiveDBQuery(key string) (interface{}, error) {
+    n := dbCallCount.Add(1)
+    fmt.Printf("  [DB] actual call #%d for key=%s\n", n, key)
+    time.Sleep(100 * time.Millisecond)
+    return fmt.Sprintf("db-result:%s", key), nil
+}
+
+func main() {
+    g := NewGroup()
+
+    // Simulate 10 concurrent requests for the same key
+    var wg sync.WaitGroup
+    for i := 0; i < 10; i++ {
+        wg.Add(1)
+        i := i
+        go func() {
+            defer wg.Done()
+            val, err, shared := g.Do("user:42", func() (interface{}, error) {
+                return expensiveDBQuery("user:42")
+            })
+            fmt.Printf("  caller %d: val=%v err=%v shared=%v\n", i, val, err, shared)
+        }()
+    }
+    wg.Wait()
+
+    fmt.Println("\nStats:", g.Stats())
+    fmt.Printf("DB was called %d time(s) for 10 concurrent requests\n", dbCallCount.Load())
+
+    // Second wave — all should go to DB again (no in-flight)
+    dbCallCount.Store(0)
+    fmt.Println("\n-- Second wave (after first call settled) --")
+    val, _, _ := g.Do("user:42", func() (interface{}, error) {
+        return expensiveDBQuery("user:42")
+    })
+    fmt.Println("result:", val)
+    fmt.Printf("DB was called %d time(s)\n", dbCallCount.Load())
+}
+```
+**Time:** O(1) per Do, O(N waiters) on broadcast | **Space:** O(in-flight keys)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Prevents N*M DB calls during traffic spikes (thundering herd) |
+| Edge Cases | If fn panics, all waiters get the panic error; recover() in runSafe handles this |
+| Error Handling | An error is shared to all waiters — if transient, they all retry next call |
+| Memory | call struct is GC'd after key removed from map; no long-term retention |
+| Concurrency | `golang.org/x/sync/singleflight` is battle-tested; use it in production |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["10 goroutines: Do(user:42)"] --> B{"key in map?"}
+    B -- "1st caller: no" --> C["create call, add to map"]
+    C --> D["execute fn() -> DB"]
+    B -- "2nd-10th: yes" --> E["wait on call.done channel"]
+    D --> F["result ready: close(done)"]
+    F --> G["all waiters unblock with same result"]
+    G --> H["delete key from map"]
+    H --> I["next Do(user:42) starts fresh call"]
+```
+
+### Interviewer Questions
+1. What is a cache stampede and how does singleflight prevent it?
+2. Why is error sharing a potential problem? How does `Forget(key)` help?
+3. What is the difference between singleflight and a cache?
+4. How does `DoChan` enable non-blocking request deduplication?
+5. What happens if fn blocks forever? How would you add a timeout?
+6. Can you use singleflight for writes, not just reads?
+7. How does `golang.org/x/sync/singleflight` differ from this implementation?
+
+### Follow-Up Questions
+1. Add `Forget(key)` to force the next call to start a fresh request
+2. Combine with a TTL cache: deduplicate in-flight AND cache results for N seconds
+3. Implement distributed singleflight using Redis SETNX
+4. Add per-key timeout: if fn takes > N seconds, unblock waiters with error
+5. Add metrics: histogram of waiter count per key, p99 wait time
+
+---
+
+## Q31: Circuit Breaker Using Goroutines and Atomic State  [Level 6 — Production]
+> **Tags:** `#circuit-breaker` `#goroutines` `#atomic` `#resilience` `#state-machine`
+
+### Problem Statement
+Implement a circuit breaker with three states: Closed (requests pass), Open (requests fail fast), Half-Open (one probe request allowed). Use atomic state transitions and goroutines for the timeout-based reset timer. Thread-safe and production-ready.
+
+### Input / Output / Constraints
+- Do(fn func() error) error
+- States: Closed -> Open (after N failures), Open -> Half-Open (after timeout), Half-Open -> Closed (on success) or Open (on failure)
+- failureThreshold int, successThreshold int (for half-open)
+- openTimeout time.Duration (how long to stay Open)
+- Thread-safe; no mutexes in hot path (use atomics)
+
+### Thought Process
+1. State stored as atomic int32 (0=Closed, 1=Open, 2=HalfOpen)
+2. Failure counter atomic; reset on success
+3. Opening: CAS state to Open, launch reset timer goroutine
+4. Half-Open: only one probe allowed (CAS to prevent multiple)
+5. Metrics: total calls, failures, short-circuits
+
+### Brute Force
+```go
+// Mutex-based, no half-open
+package main
+
+import (
+    "fmt"
+    "sync"
+    "time"
+)
+
+type SimpleBreaker struct {
+    mu        sync.Mutex
+    failures  int
+    threshold int
+    openUntil time.Time
+}
+
+func (cb *SimpleBreaker) Do(fn func() error) error {
+    cb.mu.Lock()
+    if time.Now().Before(cb.openUntil) {
+        cb.mu.Unlock()
+        return fmt.Errorf("circuit open")
+    }
+    cb.mu.Unlock()
+    err := fn()
+    cb.mu.Lock()
+    defer cb.mu.Unlock()
+    if err != nil {
+        cb.failures++
+        if cb.failures >= cb.threshold {
+            cb.openUntil = time.Now().Add(5 * time.Second)
+        }
+    } else {
+        cb.failures = 0
+    }
+    return err
+}
+```
+**Time:** O(1) | **Space:** O(1)
+
+### Better Solution
+```go
+package main
+
+import (
+    "fmt"
+    "sync/atomic"
+    "time"
+)
+
+const (
+    StateClosed   int32 = 0
+    StateOpen     int32 = 1
+    StateHalfOpen int32 = 2
+)
+
+type Breaker struct {
+    state            atomic.Int32
+    failures         atomic.Int32
+    successes        atomic.Int32
+    failureThreshold int32
+    successThreshold int32
+    openTimeout      time.Duration
+}
+
+func (cb *Breaker) Do(fn func() error) error {
+    switch cb.state.Load() {
+    case StateOpen:
+        return fmt.Errorf("circuit breaker open")
+    case StateHalfOpen:
+        // allow through — result will close or re-open
+    }
+
+    err := fn()
+    if err != nil {
+        n := cb.failures.Add(1)
+        if n >= cb.failureThreshold {
+            if cb.state.CompareAndSwap(StateClosed, StateOpen) ||
+                cb.state.CompareAndSwap(StateHalfOpen, StateOpen) {
+                go func() {
+                    time.Sleep(cb.openTimeout)
+                    cb.state.CompareAndSwap(StateOpen, StateHalfOpen)
+                    cb.failures.Store(0)
+                }()
+            }
+        }
+    } else {
+        cb.failures.Store(0)
+        if cb.state.CompareAndSwap(StateHalfOpen, StateClosed) {
+            cb.successes.Store(0)
+        }
+    }
+    return err
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "sync/atomic"
+    "time"
+)
+
+type State int32
+
+const (
+    Closed   State = 0
+    Open     State = 1
+    HalfOpen State = 2
+)
+
+func (s State) String() string {
+    switch s {
+    case Closed:
+        return "CLOSED"
+    case Open:
+        return "OPEN"
+    case HalfOpen:
+        return "HALF-OPEN"
+    default:
+        return "UNKNOWN"
+    }
+}
+
+type CircuitBreaker struct {
+    name             string
+    state            atomic.Int32
+    failures         atomic.Int32
+    halfOpenProbe    atomic.Int32 // 0=available, 1=probe in flight
+    consecutiveOK    atomic.Int32
+
+    failureThreshold int32
+    successThreshold int32 // consecutive successes to close from half-open
+    openTimeout      time.Duration
+
+    // metrics
+    totalCalls    atomic.Int64
+    shortCircuits atomic.Int64
+    stateChanges  atomic.Int64
+
+    onStateChange func(name string, from, to State)
+}
+
+type Config struct {
+    Name             string
+    FailureThreshold int
+    SuccessThreshold int
+    OpenTimeout      time.Duration
+    OnStateChange    func(name string, from, to State)
+}
+
+func NewCircuitBreaker(cfg Config) *CircuitBreaker {
+    cb := &CircuitBreaker{
+        name:             cfg.Name,
+        failureThreshold: int32(cfg.FailureThreshold),
+        successThreshold: int32(cfg.SuccessThreshold),
+        openTimeout:      cfg.OpenTimeout,
+        onStateChange:    cfg.OnStateChange,
+    }
+    if cb.failureThreshold <= 0 {
+        cb.failureThreshold = 5
+    }
+    if cb.successThreshold <= 0 {
+        cb.successThreshold = 2
+    }
+    if cb.openTimeout <= 0 {
+        cb.openTimeout = 30 * time.Second
+    }
+    return cb
+}
+
+func (cb *CircuitBreaker) Do(fn func() error) error {
+    cb.totalCalls.Add(1)
+
+    currentState := State(cb.state.Load())
+    switch currentState {
+    case Open:
+        cb.shortCircuits.Add(1)
+        return fmt.Errorf("circuit breaker %s is OPEN", cb.name)
+
+    case HalfOpen:
+        // Only allow ONE probe request through
+        if !cb.halfOpenProbe.CompareAndSwap(0, 1) {
+            cb.shortCircuits.Add(1)
+            return fmt.Errorf("circuit breaker %s is HALF-OPEN (probe in flight)", cb.name)
+        }
+        defer cb.halfOpenProbe.Store(0)
+    }
+
+    err := fn()
+
+    if err != nil {
+        cb.recordFailure(currentState)
+    } else {
+        cb.recordSuccess(currentState)
+    }
+    return err
+}
+
+func (cb *CircuitBreaker) recordFailure(fromState State) {
+    cb.consecutiveOK.Store(0)
+    failures := cb.failures.Add(1)
+
+    if fromState == HalfOpen || (fromState == Closed && failures >= cb.failureThreshold) {
+        // Transition to Open
+        if cb.state.CompareAndSwap(int32(fromState), int32(Open)) {
+            cb.stateChanges.Add(1)
+            log.Printf("[CB:%s] %s -> OPEN (failures=%d)", cb.name, fromState, failures)
+            if cb.onStateChange != nil {
+                cb.onStateChange(cb.name, fromState, Open)
+            }
+            go cb.openTimer()
+        }
+    }
+}
+
+func (cb *CircuitBreaker) recordSuccess(fromState State) {
+    cb.failures.Store(0)
+
+    if fromState == HalfOpen {
+        n := cb.consecutiveOK.Add(1)
+        if n >= cb.successThreshold {
+            if cb.state.CompareAndSwap(int32(HalfOpen), int32(Closed)) {
+                cb.consecutiveOK.Store(0)
+                cb.stateChanges.Add(1)
+                log.Printf("[CB:%s] HALF-OPEN -> CLOSED (consecutive_ok=%d)", cb.name, n)
+                if cb.onStateChange != nil {
+                    cb.onStateChange(cb.name, HalfOpen, Closed)
+                }
+            }
+        }
+    }
+}
+
+func (cb *CircuitBreaker) openTimer() {
+    time.Sleep(cb.openTimeout)
+    if cb.state.CompareAndSwap(int32(Open), int32(HalfOpen)) {
+        cb.stateChanges.Add(1)
+        log.Printf("[CB:%s] OPEN -> HALF-OPEN (timeout=%s)", cb.name, cb.openTimeout)
+        if cb.onStateChange != nil {
+            cb.onStateChange(cb.name, Open, HalfOpen)
+        }
+    }
+}
+
+func (cb *CircuitBreaker) State() State {
+    return State(cb.state.Load())
+}
+
+func (cb *CircuitBreaker) Stats() string {
+    return fmt.Sprintf(
+        "state=%s total=%d short_circuits=%d state_changes=%d failures=%d",
+        cb.State(),
+        cb.totalCalls.Load(),
+        cb.shortCircuits.Load(),
+        cb.stateChanges.Load(),
+        cb.failures.Load(),
+    )
+}
+
+// --- Demo ---
+
+func unreliableService(failFor int) func() error {
+    var calls atomic.Int32
+    return func() error {
+        n := calls.Add(1)
+        if int(n) <= failFor {
+            return fmt.Errorf("service error (call %d)", n)
+        }
+        return nil
+    }
+}
+
+func main() {
+    cb := NewCircuitBreaker(Config{
+        Name:             "payment-service",
+        FailureThreshold: 3,
+        SuccessThreshold: 2,
+        OpenTimeout:      300 * time.Millisecond,
+        OnStateChange: func(name string, from, to State) {
+            fmt.Printf("  >> STATE CHANGE: %s %s -> %s\n", name, from, to)
+        },
+    })
+
+    svc := unreliableService(6) // fail first 6 calls
+
+    for i := 0; i < 15; i++ {
+        err := cb.Do(svc)
+        if err != nil {
+            fmt.Printf("call %02d: ERROR  %v [%s]\n", i+1, err, cb.State())
+        } else {
+            fmt.Printf("call %02d: OK     [%s]\n", i+1, cb.State())
+        }
+        time.Sleep(60 * time.Millisecond)
+    }
+
+    fmt.Println("\nFinal stats:", cb.Stats())
+}
+```
+**Time:** O(1) per Do | **Space:** O(1)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Atomic state eliminates mutex contention in hot path |
+| Edge Cases | HalfOpen probe gate (CAS) prevents multiple concurrent probes |
+| Error Handling | Distinguish transient (timeout) vs permanent (auth) errors |
+| Memory | One goroutine per open-cycle for timer; short-lived, no leak |
+| Concurrency | CAS ensures only one goroutine triggers state transition |
+
+### Visual Explanation
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open : failures >= threshold
+    Open --> HalfOpen : openTimeout elapsed
+    HalfOpen --> Closed : successThreshold consecutive OK
+    HalfOpen --> Open : any failure
+    Open --> Open : requests short-circuit (fast fail)
+```
+
+### Interviewer Questions
+1. Why use `atomic.Int32` with CAS instead of a mutex for state transitions?
+2. What prevents multiple goroutines from all transitioning to Open simultaneously?
+3. What is the purpose of the success threshold in the Half-Open state?
+4. How do you differentiate network errors (should trip) from business errors (should not)?
+5. How would you implement a sliding window failure rate instead of a fixed counter?
+6. How does this interact with retries? Should retries bypass the circuit breaker?
+7. How would you aggregate circuit breaker state across multiple instances?
+
+### Follow-Up Questions
+1. Add sliding window: trip if >50% of last 100 calls failed
+2. Implement half-open with percentage traffic (let 10% through, not just 1)
+3. Add Prometheus metrics for state, calls, latency by state
+4. Implement bulkhead pattern alongside circuit breaker
+5. Combine circuit breaker with retry: retry only when circuit is Closed
+
+---
+## Q32: Distributed Job Processor with Goroutines + Redis Queue  [Level 6 — Production]
+> **Tags:** `#distributed` `#redis` `#goroutines` `#job-queue` `#at-least-once`
+
+### Problem Statement
+Build a distributed job processor where multiple service instances pull jobs from a Redis list (LPUSH/BRPOP pattern). Each instance runs a goroutine pool. Implement at-least-once delivery using Redis GETSET for job visibility timeout (if a worker crashes mid-job, another instance reclaims it after timeout).
+
+### Input / Output / Constraints
+- Redis list `jobs:pending` (BRPOP for blocking dequeue)
+- Redis hash `jobs:inflight` key=jobID value=deadline_unix (for reclaim)
+- Worker pool: N goroutines per instance
+- At-least-once: if job not acked within visibilityTimeout, re-enqueue
+- Ack: HDEL jobs:inflight jobID on success
+
+### Thought Process
+1. Worker: BRPOP jobs:pending -> get job JSON
+2. Before processing: HSET jobs:inflight jobID (now+visibility)
+3. Process job
+4. On success: HDEL jobs:inflight jobID
+5. On failure or crash: visibility timeout expires, reaper re-enqueues
+6. Reaper goroutine: HGETALL jobs:inflight, re-enqueue expired entries
+
+### Brute Force
+```go
+// Single worker, no at-least-once
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "github.com/redis/go-redis/v9"
+    "time"
+)
+
+func processJobs(rdb *redis.Client) {
+    for {
+        result, err := rdb.BRPop(context.Background(), 5*time.Second, "jobs:pending").Result()
+        if err != nil { continue }
+        var job map[string]interface{}
+        json.Unmarshal([]byte(result[1]), &job)
+        fmt.Println("processing", job["id"])
+    }
+}
+```
+**Time:** O(1) per job | **Space:** O(1) — but no fault tolerance
+
+### Better Solution
+See Best Solution — the visibility timeout pattern requires the full implementation.
+
+### Best Solution
+```go
+package main
+
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "sync"
+    "time"
+    // go get github.com/redis/go-redis/v9
+    // Shown as interface for compilation without Redis:
+)
+
+// RedisClient interface for testability
+type RedisClient interface {
+    BRPop(ctx context.Context, timeout time.Duration, keys ...string) ([]string, error)
+    LPush(ctx context.Context, key string, values ...interface{}) error
+    HSet(ctx context.Context, key string, values ...interface{}) error
+    HDel(ctx context.Context, key string, fields ...string) error
+    HGetAll(ctx context.Context, key string) (map[string]string, error)
+}
+
+type Job struct {
+    ID      string          `json:"id"`
+    Payload json.RawMessage `json:"payload"`
+    Retries int             `json:"retries"`
+}
+
+const (
+    pendingQueue      = "jobs:pending"
+    inflightHash      = "jobs:inflight"
+    visibilityTimeout = 30 * time.Second
+    reaperInterval    = 10 * time.Second
+    maxRetries        = 3
+)
+
+type Processor struct {
+    rdb         RedisClient
+    numWorkers  int
+    handler     func(ctx context.Context, job Job) error
+    wg          sync.WaitGroup
+    stopCh      chan struct{}
+}
+
+func NewProcessor(rdb RedisClient, numWorkers int, handler func(context.Context, Job) error) *Processor {
+    return &Processor{
+        rdb:        rdb,
+        numWorkers: numWorkers,
+        handler:    handler,
+        stopCh:     make(chan struct{}),
+    }
+}
+
+func (p *Processor) Start(ctx context.Context) {
+    // Start workers
+    for i := 0; i < p.numWorkers; i++ {
+        p.wg.Add(1)
+        go p.worker(ctx, i)
+    }
+    // Start visibility timeout reaper
+    p.wg.Add(1)
+    go p.reaper(ctx)
+}
+
+func (p *Processor) worker(ctx context.Context, id int) {
+    defer p.wg.Done()
+    for {
+        select {
+        case <-ctx.Done():
+            log.Printf("[worker %d] context done, stopping", id)
+            return
+        default:
+        }
+
+        // Blocking pop with 2s timeout (returns on ctx cancel)
+        result, err := p.rdb.BRPop(ctx, 2*time.Second, pendingQueue)
+        if err != nil {
+            if ctx.Err() != nil {
+                return
+            }
+            continue // timeout or transient error
+        }
+        if len(result) < 2 {
+            continue
+        }
+
+        var job Job
+        if err := json.Unmarshal([]byte(result[1]), &job); err != nil {
+            log.Printf("[worker %d] invalid job JSON: %v", id, err)
+            continue
+        }
+
+        p.processJob(ctx, id, job)
+    }
+}
+
+func (p *Processor) processJob(ctx context.Context, workerID int, job Job) {
+    // Register in-flight with deadline
+    deadline := time.Now().Add(visibilityTimeout).Unix()
+    if err := p.rdb.HSet(ctx, inflightHash, job.ID, fmt.Sprintf("%d", deadline)); err != nil {
+        log.Printf("[worker %d] failed to register inflight job %s: %v", workerID, job.ID, err)
+        // Re-enqueue to avoid loss
+        p.enqueue(ctx, job)
+        return
+    }
+
+    // Execute job
+    jobCtx, cancel := context.WithTimeout(ctx, visibilityTimeout-5*time.Second)
+    defer cancel()
+
+    err := p.handler(jobCtx, job)
+
+    if err != nil {
+        log.Printf("[worker %d] job %s failed (attempt %d/%d): %v",
+            workerID, job.ID, job.Retries+1, maxRetries, err)
+        if job.Retries < maxRetries {
+            job.Retries++
+            p.enqueue(ctx, job) // re-enqueue for retry
+        } else {
+            log.Printf("[worker %d] job %s exceeded max retries, dropping", workerID, job.ID)
+            // In production: send to dead-letter queue
+        }
+    } else {
+        log.Printf("[worker %d] job %s completed successfully", workerID, job.ID)
+    }
+
+    // Ack: remove from inflight
+    p.rdb.HDel(ctx, inflightHash, job.ID)
+}
+
+func (p *Processor) enqueue(ctx context.Context, job Job) {
+    data, _ := json.Marshal(job)
+    if err := p.rdb.LPush(ctx, pendingQueue, data); err != nil {
+        log.Printf("failed to enqueue job %s: %v", job.ID, err)
+    }
+}
+
+func (p *Processor) reaper(ctx context.Context) {
+    defer p.wg.Done()
+    ticker := time.NewTicker(reaperInterval)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            p.reclaim(ctx)
+        }
+    }
+}
+
+func (p *Processor) reclaim(ctx context.Context) {
+    inflight, err := p.rdb.HGetAll(ctx, inflightHash)
+    if err != nil {
+        log.Printf("reaper: HGetAll error: %v", err)
+        return
+    }
+
+    now := time.Now().Unix()
+    reclaimed := 0
+    for jobID, deadlineStr := range inflight {
+        var deadline int64
+        fmt.Sscanf(deadlineStr, "%d", &deadline)
+        if now > deadline {
+            // Job expired: remove from inflight, re-enqueue
+            p.rdb.HDel(ctx, inflightHash, jobID)
+            // In a real system: fetch full job from a job store
+            // Here we create a placeholder for demonstration
+            p.enqueue(ctx, Job{ID: jobID, Retries: maxRetries - 1})
+            reclaimed++
+            log.Printf("reaper: reclaimed expired job %s", jobID)
+        }
+    }
+    if reclaimed > 0 {
+        log.Printf("reaper: reclaimed %d expired jobs", reclaimed)
+    }
+}
+
+func (p *Processor) Stop() {
+    p.wg.Wait()
+}
+
+// --- Mock Redis for compilation ---
+type mockRedis struct {
+    mu    sync.Mutex
+    queue []string
+}
+
+func (m *mockRedis) BRPop(ctx context.Context, timeout time.Duration, keys ...string) ([]string, error) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    if len(m.queue) == 0 {
+        select {
+        case <-ctx.Done():
+            return nil, ctx.Err()
+        case <-time.After(timeout):
+            return nil, fmt.Errorf("timeout")
+        }
+    }
+    v := m.queue[0]
+    m.queue = m.queue[1:]
+    return []string{keys[0], v}, nil
+}
+func (m *mockRedis) LPush(_ context.Context, _ string, values ...interface{}) error {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    for _, v := range values {
+        m.queue = append(m.queue, fmt.Sprintf("%s", v))
+    }
+    return nil
+}
+func (m *mockRedis) HSet(_ context.Context, _ string, _ ...interface{}) error  { return nil }
+func (m *mockRedis) HDel(_ context.Context, _ string, _ ...string) error       { return nil }
+func (m *mockRedis) HGetAll(_ context.Context, _ string) (map[string]string, error) {
+    return map[string]string{}, nil
+}
+
+func main() {
+    rdb := &mockRedis{}
+
+    // Enqueue some jobs
+    for i := 0; i < 5; i++ {
+        job := Job{ID: fmt.Sprintf("job-%02d", i), Payload: json.RawMessage(`{"n":42}`)}
+        data, _ := json.Marshal(job)
+        rdb.LPush(context.Background(), pendingQueue, data)
+    }
+
+    ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+    defer cancel()
+
+    processor := NewProcessor(rdb, 3, func(ctx context.Context, job Job) error {
+        fmt.Printf("handling job %s\n", job.ID)
+        time.Sleep(100 * time.Millisecond)
+        return nil
+    })
+
+    processor.Start(ctx)
+    processor.Stop()
+    fmt.Println("all jobs processed")
+}
+```
+**Time:** O(1) per job dequeue | **Space:** O(workers + inflight)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Multiple instances, each with N workers; Redis handles coordination |
+| Edge Cases | Worker crash: visibility timeout ensures reaper re-enqueues |
+| Error Handling | maxRetries + dead-letter queue prevents infinite retry loops |
+| Memory | Jobs stored in Redis; workers hold only one job at a time |
+| Concurrency | BRPOP is atomic in Redis; no two workers receive the same job |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    P["Producer: LPUSH jobs:pending"] --> Q["Redis List"]
+    Q --> W1["Worker 1: BRPOP"] & W2["Worker 2: BRPOP"]
+    W1 --> A1["HSET jobs:inflight jobID deadline"]
+    A1 --> E1["execute handler()"]
+    E1 -- success --> D1["HDEL jobs:inflight jobID"]
+    E1 -- failure --> R1["LPUSH re-enqueue with retry+1"]
+    T["Reaper goroutine every 10s"] --> I["HGETALL jobs:inflight"]
+    I --> C{"deadline < now?"}
+    C -- yes --> RE["HDEL + LPUSH reclaim"]
+    C -- no --> NOP["skip"]
+```
+
+### Interviewer Questions
+1. Why use BRPOP instead of LPOP with polling?
+2. What is the visibility timeout pattern and when can it cause double-processing?
+3. How do you ensure exactly-once processing instead of at-least-once?
+4. How do you handle job ordering guarantees across multiple workers?
+5. What is the role of the dead-letter queue?
+6. How would you implement job priority in Redis?
+7. How does the reaper interact with Redis Cluster?
+
+### Follow-Up Questions
+1. Implement exactly-once using Redis Lua script for GETSET + LPOP atomically
+2. Add job result storage: SETEX result:jobID TTL value
+3. Implement delayed jobs: ZADD jobs:delayed score=timestamp member=job
+4. Add batch dequeue: LMPOP to get N jobs in one round-trip
+5. Implement consumer groups using Redis Streams (XADD/XREADGROUP) for stronger guarantees
+
+---
+
+## Q33: Zero-Downtime Restart Preserving In-Flight Goroutines  [Level 6 — Production]
+> **Tags:** `#zero-downtime` `#graceful-restart` `#goroutines` `#signal` `#fd-passing`
+
+### Problem Statement
+Implement zero-downtime restart for an HTTP server: on SIGHUP, fork a new process that inherits the listening socket (via fd passing), continues accepting new connections, while the old process finishes all in-flight requests before exiting.
+
+### Input / Output / Constraints
+- HTTP server handling requests
+- SIGHUP triggers restart
+- New process accepts new connections immediately
+- Old process completes all in-flight requests (graceful drain)
+- No new connections lost; no connection refused during restart
+
+### Thought Process
+1. Get listener's file descriptor
+2. Pass fd to child process via env var or extra file
+3. Child: create listener from inherited fd (SO_REUSEPORT or inherited)
+4. Old process: stop accepting, drain in-flight with timeout
+5. Coordinate via Unix socket or pipe (child signals "ready")
+
+### Brute Force
+```go
+// Abrupt restart — drops in-flight requests
+package main
+
+import (
+    "net/http"
+    "os"
+    "os/exec"
+    "os/signal"
+    "syscall"
+)
+
+func main() {
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {})
+    go http.ListenAndServe(":8080", nil)
+    c := make(chan os.Signal, 1)
+    signal.Notify(c, syscall.SIGHUP)
+    <-c
+    exec.Command(os.Args[0], os.Args[1:]...).Start()
+    os.Exit(0) // drops in-flight
+}
+```
+**Time:** O(1) restart | **Space:** O(1) — but drops connections
+
+### Better Solution
+```go
+// Graceful drain without fd passing (brief gap in listener)
+package main
+
+import (
+    "context"
+    "log"
+    "net/http"
+    "os"
+    "os/exec"
+    "os/signal"
+    "syscall"
+    "time"
+)
+
+func main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        time.Sleep(2 * time.Second)
+        w.Write([]byte("ok"))
+    })
+
+    srv := &http.Server{Addr: ":8080", Handler: mux}
+
+    go func() { srv.ListenAndServe() }()
+
+    sig := make(chan os.Signal, 1)
+    signal.Notify(sig, syscall.SIGHUP)
+    <-sig
+
+    log.Println("SIGHUP: starting new process")
+    cmd := exec.Command(os.Args[0], os.Args[1:]...)
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.Start()
+
+    log.Println("draining in-flight requests")
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    srv.Shutdown(ctx) // graceful drain
+    log.Println("old process exiting")
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net"
+    "net/http"
+    "os"
+    "os/exec"
+    "os/signal"
+    "strconv"
+    "syscall"
+    "time"
+)
+
+const inheritedFDEnv = "LISTENER_FD"
+const gracePeriod = 30 * time.Second
+
+func getListener() (net.Listener, error) {
+    // Check if we inherited a listener fd from parent
+    if fdStr := os.Getenv(inheritedFDEnv); fdStr != "" {
+        fd, err := strconv.Atoi(fdStr)
+        if err != nil {
+            return nil, fmt.Errorf("invalid fd %s: %w", fdStr, err)
+        }
+        // Create listener from inherited file descriptor
+        f := os.NewFile(uintptr(fd), "listener")
+        if f == nil {
+            return nil, fmt.Errorf("nil file for fd %d", fd)
+        }
+        ln, err := net.FileListener(f)
+        f.Close() // FileListener dups the fd
+        if err != nil {
+            return nil, fmt.Errorf("FileListener: %w", err)
+        }
+        log.Printf("inherited listener fd=%d addr=%s", fd, ln.Addr())
+        return ln, nil
+    }
+    // Fresh start
+    ln, err := net.Listen("tcp", ":8080")
+    if err != nil {
+        return nil, err
+    }
+    log.Printf("new listener addr=%s", ln.Addr())
+    return ln, nil
+}
+
+func startChild(ln net.Listener) (*exec.Cmd, error) {
+    // Get underlying *os.File for the listener
+    tcpLn, ok := ln.(*net.TCPListener)
+    if !ok {
+        return nil, fmt.Errorf("not a TCPListener")
+    }
+    f, err := tcpLn.File()
+    if err != nil {
+        return nil, fmt.Errorf("listener.File(): %w", err)
+    }
+    defer f.Close()
+
+    // Pass fd=3 to child (0=stdin, 1=stdout, 2=stderr, 3=listener)
+    cmd := exec.Command(os.Args[0], os.Args[1:]...)
+    cmd.Stdout = os.Stdout
+    cmd.Stderr = os.Stderr
+    cmd.ExtraFiles = []*os.File{f} // fd 3 in child
+    cmd.Env = append(os.Environ(), fmt.Sprintf("%s=3", inheritedFDEnv))
+
+    if err := cmd.Start(); err != nil {
+        return nil, fmt.Errorf("start child: %w", err)
+    }
+    log.Printf("child started pid=%d", cmd.Process.Pid)
+    return cmd, nil
+}
+
+func run() error {
+    ln, err := getListener()
+    if err != nil {
+        return fmt.Errorf("getListener: %w", err)
+    }
+
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        pid := os.Getpid()
+        time.Sleep(500 * time.Millisecond) // simulate work
+        fmt.Fprintf(w, "pid=%d path=%s\n", pid, r.URL.Path)
+    })
+    mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintf(w, "ok pid=%d\n", os.Getpid())
+    })
+
+    srv := &http.Server{
+        Handler:      mux,
+        ReadTimeout:  10 * time.Second,
+        WriteTimeout: 15 * time.Second,
+    }
+
+    // Start serving
+    serveErr := make(chan error, 1)
+    go func() {
+        log.Printf("pid=%d serving on %s", os.Getpid(), ln.Addr())
+        if err := srv.Serve(ln); err != http.ErrServerClosed {
+            serveErr <- err
+        } else {
+            serveErr <- nil
+        }
+    }()
+
+    // Signal handling
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT)
+
+    select {
+    case err := <-serveErr:
+        return err
+
+    case sig := <-sigCh:
+        switch sig {
+        case syscall.SIGHUP:
+            log.Printf("pid=%d SIGHUP: initiating zero-downtime restart", os.Getpid())
+
+            // Start child before stopping listener
+            if _, err := startChild(ln); err != nil {
+                log.Printf("WARNING: failed to start child: %v — not restarting", err)
+            } else {
+                // Small delay to let child bind and start accepting
+                time.Sleep(100 * time.Millisecond)
+            }
+
+            // Graceful shutdown of this process
+            log.Printf("pid=%d draining in-flight requests (grace=%s)", os.Getpid(), gracePeriod)
+            ctx, cancel := context.WithTimeout(context.Background(), gracePeriod)
+            defer cancel()
+            if err := srv.Shutdown(ctx); err != nil {
+                log.Printf("shutdown error: %v", err)
+            }
+            log.Printf("pid=%d exiting cleanly", os.Getpid())
+            return nil
+
+        case syscall.SIGTERM, syscall.SIGINT:
+            log.Printf("pid=%d %s: graceful shutdown", os.Getpid(), sig)
+            ctx, cancel := context.WithTimeout(context.Background(), gracePeriod)
+            defer cancel()
+            return srv.Shutdown(ctx)
+        }
+    }
+    return nil
+}
+
+func main() {
+    if err := run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+**Time:** O(in-flight) drain time | **Space:** O(in-flight goroutines)
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Works for single-process; use Kubernetes rolling update for multi-instance |
+| Edge Cases | Child must start and bind before parent stops accepting; sleep(100ms) is a heuristic |
+| Error Handling | If child fails to start, old process continues (no restart) |
+| Memory | Both processes run briefly simultaneously; plan for 2x memory during restart |
+| Concurrency | net.FileListener dups the fd; both parent and child can accept on same port |
+
+### Visual Explanation
+```mermaid
+sequenceDiagram
+    participant LB as Load Balancer
+    participant Old as Old Process (pid=100)
+    participant New as New Process (pid=101)
+    participant Redis as Shared State
+    LB->>Old: request A
+    Note over Old: processing A
+    Note over Old: SIGHUP received
+    Old->>New: fork + pass listener fd=3
+    New->>LB: accepting new connections
+    LB->>New: request B
+    Old->>Old: srv.Shutdown(30s) — drain A
+    Old->>Old: request A completes, exit
+```
+
+### Interviewer Questions
+1. What is `net.FileListener` and how does it duplicate the file descriptor?
+2. Why must the child start accepting before the parent calls Shutdown?
+3. What is the brief window where both processes accept connections, and is this a problem?
+4. How does Kubernetes rolling update differ from this fd-passing approach?
+5. What happens to WebSocket connections during zero-downtime restart?
+6. How do you handle shared in-process state (e.g., rate limiter) across restart?
+7. What is the purpose of `ExtraFiles` in `exec.Cmd`?
+
+### Follow-Up Questions
+1. Implement a readiness check: child signals "ready" via pipe before parent drains
+2. Use `SO_REUSEPORT` so both processes independently bind the same port
+3. Handle WebSocket upgrades: drain with a longer timeout for long-lived connections
+4. Add rollback: if child crashes within 5 seconds, restart old process
+5. Implement graceful restart for a gRPC server
+
+---
+
+## Q34: Goroutine Leak Detector Middleware for HTTP Servers  [Level 6 — Production]
+> **Tags:** `#goroutine-leak` `#middleware` `#http` `#monitoring` `#pprof`
+
+### Problem Statement
+Write HTTP middleware that: tracks goroutine count before and after each request handler, logs/alerts when goroutine count grows (indicating a leak from the handler), and exposes a `/debug/goroutines` endpoint with current goroutine stacks.
+
+### Input / Output / Constraints
+- `LeakDetectorMiddleware(threshold int, alertFn func(delta, url string)) func(http.Handler) http.Handler`
+- Goroutine delta > threshold triggers alertFn
+- Endpoint GET /debug/goroutines returns full stack dump
+- Must not significantly slow down the hot path
+- Thread-safe goroutine counting
+
+### Thought Process
+1. Middleware: snapshot `runtime.NumGoroutine()` before and after handler
+2. If after-before > threshold, fire alert (async)
+3. /debug/goroutines: serve `runtime/pprof` goroutine profile
+4. Use rolling average to filter noise (background goroutines fluctuate)
+
+### Brute Force
+```go
+// Simple count-based, no averaging
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "runtime"
+)
+
+func leakMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        before := runtime.NumGoroutine()
+        next.ServeHTTP(w, r)
+        after := runtime.NumGoroutine()
+        if after-before > 5 {
+            fmt.Printf("LEAK? %s: +%d goroutines\n", r.URL.Path, after-before)
+        }
+    })
+}
+```
+**Time:** O(1) overhead | **Space:** O(1)
+
+### Better Solution
+```go
+// With pprof endpoint and alerting
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "runtime"
+    "runtime/pprof"
+    "sync/atomic"
+)
+
+type LeakMiddleware struct {
+    threshold    int
+    alertFn      func(path string, delta int)
+    totalLeaks   atomic.Int64
+}
+
+func (lm *LeakMiddleware) Wrap(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        before := runtime.NumGoroutine()
+        next.ServeHTTP(w, r)
+        after := runtime.NumGoroutine()
+        delta := after - before
+        if delta > lm.threshold {
+            lm.totalLeaks.Add(int64(delta))
+            go lm.alertFn(r.URL.Path, delta) // async alert
+        }
+    })
+}
+
+func DebugGoroutinesHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/plain")
+    pprof.Lookup("goroutine").WriteTo(w, 2)
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "bytes"
+    "fmt"
+    "log"
+    "net/http"
+    "runtime"
+    "runtime/pprof"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+// LeakEvent describes a goroutine growth event during a request.
+type LeakEvent struct {
+    Path      string
+    Method    string
+    Delta     int
+    Before    int
+    After     int
+    Timestamp time.Time
+    Stack     string // sampled goroutine dump
+}
+
+// LeakDetector tracks goroutine growth per-request.
+type LeakDetector struct {
+    threshold int
+    alertFn   func(event LeakEvent)
+
+    // Rolling baseline: exponential moving average of goroutine count
+    mu       sync.Mutex
+    emaCount float64
+    emaAlpha float64 // smoothing factor 0-1
+
+    // Metrics
+    totalRequests atomic.Int64
+    leakEvents    atomic.Int64
+}
+
+func NewLeakDetector(threshold int, alertFn func(LeakEvent)) *LeakDetector {
+    return &LeakDetector{
+        threshold: threshold,
+        alertFn:   alertFn,
+        emaAlpha:  0.1, // smooth over ~10 requests
+        emaCount:  float64(runtime.NumGoroutine()),
+    }
+}
+
+func (ld *LeakDetector) updateEMA(current int) float64 {
+    ld.mu.Lock()
+    defer ld.mu.Unlock()
+    ld.emaCount = ld.emaAlpha*float64(current) + (1-ld.emaAlpha)*ld.emaCount
+    return ld.emaCount
+}
+
+func (ld *LeakDetector) Middleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ld.totalRequests.Add(1)
+
+        before := runtime.NumGoroutine()
+        ld.updateEMA(before)
+
+        start := time.Now()
+        next.ServeHTTP(w, r)
+        _ = start // can be used for latency tracking
+
+        // Small delay to let goroutines spawn and settle
+        // (handlers may return before spawned goroutines are scheduled)
+        runtime.Gosched()
+        after := runtime.NumGoroutine()
+        delta := after - before
+
+        if delta > ld.threshold {
+            ld.leakEvents.Add(1)
+
+            // Capture stack dump asynchronously to avoid blocking the handler
+            go func() {
+                buf := make([]byte, 2<<20)
+                n := runtime.Stack(buf, true)
+                stack := string(buf[:n])
+
+                event := LeakEvent{
+                    Path:      r.URL.Path,
+                    Method:    r.Method,
+                    Delta:     delta,
+                    Before:    before,
+                    After:     after,
+                    Timestamp: time.Now(),
+                    Stack:     stack,
+                }
+                if ld.alertFn != nil {
+                    ld.alertFn(event)
+                }
+            }()
+        }
+    })
+}
+
+func (ld *LeakDetector) Stats() string {
+    ld.mu.Lock()
+    ema := ld.emaCount
+    ld.mu.Unlock()
+    return fmt.Sprintf("requests=%d leak_events=%d current=%d ema=%.1f",
+        ld.totalRequests.Load(),
+        ld.leakEvents.Load(),
+        runtime.NumGoroutine(),
+        ema,
+    )
+}
+
+// DebugGoroutinesHandler serves a human-readable goroutine dump.
+func DebugGoroutinesHandler(w http.ResponseWriter, r *http.Request) {
+    debug := 1
+    if r.URL.Query().Get("full") == "1" {
+        debug = 2
+    }
+    w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+    p := pprof.Lookup("goroutine")
+    if p == nil {
+        http.Error(w, "pprof not available", http.StatusInternalServerError)
+        return
+    }
+    p.WriteTo(w, debug)
+}
+
+// DebugGoroutineCountHandler returns just the count as JSON.
+func DebugGoroutineCountHandler(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "application/json")
+    fmt.Fprintf(w, `{"goroutines":%d,"time":"%s"}`,
+        runtime.NumGoroutine(), time.Now().Format(time.RFC3339))
+}
+
+// --- Demo handlers ---
+
+func safeHandler(w http.ResponseWriter, r *http.Request) {
+    w.Write([]byte("safe\n"))
+}
+
+func leakyHandler(w http.ResponseWriter, r *http.Request) {
+    // Intentionally leaks a goroutine
+    ch := make(chan int) // unbuffered, never sent
+    go func() {
+        <-ch // blocks forever
+    }()
+    w.Write([]byte("response (leaked goroutine!)\n"))
+}
+
+func main() {
+    ld := NewLeakDetector(2, func(event LeakEvent) {
+        log.Printf("GOROUTINE LEAK DETECTED: path=%s method=%s delta=+%d before=%d after=%d",
+            event.Path, event.Method, event.Delta, event.Before, event.After)
+        // In production: send to Prometheus, PagerDuty, Slack
+        // Truncate stack for log
+        stack := event.Stack
+        if len(stack) > 1000 {
+            stack = stack[:1000] + "...(truncated)"
+        }
+        log.Printf("stack dump:\n%s", stack)
+    })
+
+    mux := http.NewServeMux()
+    mux.HandleFunc("/safe", safeHandler)
+    mux.HandleFunc("/leaky", leakyHandler)
+    mux.HandleFunc("/debug/goroutines", DebugGoroutinesHandler)
+    mux.HandleFunc("/debug/goroutine-count", DebugGoroutineCountHandler)
+    mux.HandleFunc("/debug/stats", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprintln(w, ld.Stats())
+    })
+
+    wrappedMux := ld.Middleware(mux)
+
+    srv := &http.Server{
+        Addr:    ":8080",
+        Handler: wrappedMux,
+    }
+
+    // Demo: make local requests
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        client := &http.Client{}
+
+        // Safe request
+        resp, _ := client.Get("http://localhost:8080/safe")
+        if resp != nil { resp.Body.Close() }
+
+        // Leaky request
+        resp, _ = client.Get("http://localhost:8080/leaky")
+        if resp != nil { resp.Body.Close() }
+
+        time.Sleep(100 * time.Millisecond)
+
+        // Check pprof
+        var buf bytes.Buffer
+        pprof.Lookup("goroutine").WriteTo(&buf, 1)
+        log.Printf("goroutine count: %d", runtime.NumGoroutine())
+        log.Println("stats:", ld.Stats())
+    }()
+
+    log.Println("server starting on :8080")
+    log.Println("endpoints: /safe /leaky /debug/goroutines /debug/goroutine-count /debug/stats")
+    if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+        log.Fatal(err)
+    }
+}
+```
+**Time:** O(G) alert (async) | **Space:** O(1) hot path, O(G) for stack dump
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Stack dump is expensive; do it async and rate-limit (at most once per 10s) |
+| Edge Cases | Background goroutine churn causes false positives; EMA smoothing reduces noise |
+| Error Handling | alertFn must be non-blocking; goroutine to fire alerts |
+| Memory | Stack dump buffer 2MB; pool with sync.Pool in high-traffic systems |
+| Concurrency | runtime.NumGoroutine() is O(1) and safe to call from any goroutine |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["HTTP Request"] --> B["LeakDetector.Middleware"]
+    B --> C["before = NumGoroutine()"]
+    C --> D["next.ServeHTTP(w, r)"]
+    D --> E["runtime.Gosched()"]
+    E --> F["after = NumGoroutine()"]
+    F --> G{"after-before > threshold?"}
+    G -- yes --> H["go: capture stack, fire alertFn"]
+    G -- no --> I["update EMA"]
+    H --> I
+    I --> J["response returned"]
+    K["GET /debug/goroutines"] --> L["pprof.Lookup(goroutine).WriteTo(w)"]
+```
+
+### Interviewer Questions
+1. Why call `runtime.Gosched()` between handler return and goroutine count check?
+2. How does the EMA baseline reduce false positives?
+3. What is the cost of `runtime.Stack(buf, all=true)` in production?
+4. How would you rate-limit goroutine stack dumps to avoid performance impact?
+5. Why must `alertFn` run in a separate goroutine?
+6. How does this middleware compose with other middlewares (auth, logging)?
+7. How would you write a unit test to verify the middleware fires on a leaky handler?
+
+### Follow-Up Questions
+1. Add rate limiting: fire at most one alert per minute per endpoint
+2. Track goroutine count as a Prometheus gauge
+3. Add a `/debug/goroutines/diff` endpoint showing growth since server start
+4. Integrate with PagerDuty: fire incident if goroutine count grows >10% over 5 minutes
+5. Write a test using `httptest.NewRecorder` that verifies alertFn is called for leaky handler
+
+---
+
+## Q35: Production-Grade Fan-Out with Backpressure and Timeouts  [Level 6 — Production]
+> **Tags:** `#fan-out` `#backpressure` `#timeout` `#goroutines` `#production`
+
+### Problem Statement
+Fan out a request to N downstream services, collect responses, and return the aggregated result. Must handle: per-downstream timeout, global deadline, backpressure (drop slowest if needed), partial success (return what arrived before deadline), and circuit breakers per downstream.
+
+### Input / Output / Constraints
+- downstreams []Downstream (each with URL and timeout)
+- globalDeadline time.Duration
+- minRequired int (minimum successful responses to proceed)
+- Return AggregatedResult{Responses []Response, Partial bool, Errors []error}
+- If minRequired not met, return error
+
+### Thought Process
+1. Parent context with global deadline
+2. Per-downstream child context with individual timeout
+3. Results buffered channel with capacity N
+4. Collect with timeout: either all arrive or deadline fires
+5. minRequired check: return partial if deadline exceeded
+
+### Brute Force
+```go
+// No timeout, no partial, blocks until all respond
+package main
+
+import (
+    "sync"
+)
+
+func fanOut(fns []func() (interface{}, error)) []interface{} {
+    results := make([]interface{}, len(fns))
+    var wg sync.WaitGroup
+    for i, fn := range fns {
+        wg.Add(1)
+        i, fn := i, fn
+        go func() {
+            defer wg.Done()
+            results[i], _ = fn()
+        }()
+    }
+    wg.Wait()
+    return results
+}
+```
+**Time:** O(max latency) | **Space:** O(N) — but no timeout, hangs forever
+
+### Better Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "time"
+)
+
+type Response struct {
+    Index int
+    Value interface{}
+    Err   error
+    Took  time.Duration
+}
+
+func fanOutWithTimeout(ctx context.Context, fns []func(context.Context) (interface{}, error),
+    timeout time.Duration) []Response {
+    ctx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+
+    ch := make(chan Response, len(fns))
+    var wg sync.WaitGroup
+
+    for i, fn := range fns {
+        wg.Add(1)
+        i, fn := i, fn
+        go func() {
+            defer wg.Done()
+            start := time.Now()
+            val, err := fn(ctx)
+            ch <- Response{Index: i, Value: val, Err: err, Took: time.Since(start)}
+        }()
+    }
+
+    go func() { wg.Wait(); close(ch) }()
+
+    var results []Response
+    for r := range ch {
+        results = append(results, r)
+    }
+    return results
+}
+
+func main() {
+    fns := []func(context.Context) (interface{}, error){
+        func(ctx context.Context) (interface{}, error) {
+            time.Sleep(50 * time.Millisecond)
+            return "fast", nil
+        },
+        func(ctx context.Context) (interface{}, error) {
+            time.Sleep(2 * time.Second) // slow
+            return "slow", nil
+        },
+        func(ctx context.Context) (interface{}, error) {
+            return nil, fmt.Errorf("error")
+        },
+    }
+    results := fanOutWithTimeout(context.Background(), fns, 200*time.Millisecond)
+    for _, r := range results {
+        fmt.Printf("[%d] val=%v err=%v took=%s\n", r.Index, r.Value, r.Err, r.Took)
+    }
+}
+```
+
+### Best Solution
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "sync"
+    "sync/atomic"
+    "time"
+)
+
+type DownstreamConfig struct {
+    Name    string
+    Timeout time.Duration
+    Weight  int // for weighted aggregation
+}
+
+type DownstreamResult struct {
+    Name    string
+    Value   interface{}
+    Err     error
+    Latency time.Duration
+}
+
+type AggregatedResult struct {
+    Responses []DownstreamResult
+    Errors    []error
+    Partial   bool // true if deadline fired before all responded
+    Duration  time.Duration
+}
+
+// CircuitBreaker stub — use Q31 implementation in production
+type CB struct {
+    failures atomic.Int32
+    open     atomic.Bool
+}
+
+func (cb *CB) Allow() bool { return !cb.open.Load() }
+func (cb *CB) RecordSuccess() {
+    cb.failures.Store(0)
+    cb.open.Store(false)
+}
+func (cb *CB) RecordFailure() {
+    if cb.failures.Add(1) >= 3 {
+        cb.open.Store(true)
+        go func() {
+            time.Sleep(5 * time.Second)
+            cb.open.Store(false)
+            cb.failures.Store(0)
+        }()
+    }
+}
+
+type FanOut struct {
+    downstreams []DownstreamConfig
+    cbs         map[string]*CB
+    minRequired int
+}
+
+func NewFanOut(configs []DownstreamConfig, minRequired int) *FanOut {
+    cbs := make(map[string]*CB, len(configs))
+    for _, c := range configs {
+        cbs[c.Name] = &CB{}
+    }
+    return &FanOut{
+        downstreams: configs,
+        cbs:         cbs,
+        minRequired: minRequired,
+    }
+}
+
+// Do fans out fn to all downstreams, collects results up to globalDeadline.
+func (fo *FanOut) Do(
+    ctx context.Context,
+    globalDeadline time.Duration,
+    fn func(ctx context.Context, name string) (interface{}, error),
+) (*AggregatedResult, error) {
+
+    start := time.Now()
+    gCtx, gCancel := context.WithTimeout(ctx, globalDeadline)
+    defer gCancel()
+
+    n := len(fo.downstreams)
+    resultCh := make(chan DownstreamResult, n)
+
+    var wg sync.WaitGroup
+    for _, cfg := range fo.downstreams {
+        cfg := cfg
+        cb := fo.cbs[cfg.Name]
+
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+
+            // Circuit breaker check
+            if !cb.Allow() {
+                resultCh <- DownstreamResult{
+                    Name: cfg.Name,
+                    Err:  fmt.Errorf("circuit breaker open for %s", cfg.Name),
+                }
+                return
+            }
+
+            // Per-downstream timeout (child of global context)
+            dCtx, dCancel := context.WithTimeout(gCtx, cfg.Timeout)
+            defer dCancel()
+
+            t := time.Now()
+            val, err := fn(dCtx, cfg.Name)
+            latency := time.Since(t)
+
+            if err != nil {
+                cb.RecordFailure()
+            } else {
+                cb.RecordSuccess()
+            }
+
+            resultCh <- DownstreamResult{
+                Name:    cfg.Name,
+                Value:   val,
+                Err:     err,
+                Latency: latency,
+            }
+        }()
+    }
+
+    // Close channel when all goroutines finish
+    go func() {
+        wg.Wait()
+        close(resultCh)
+    }()
+
+    // Collect results until all arrive or global deadline
+    var (
+        responses []DownstreamResult
+        errors    []error
+        partial   bool
+        successes int
+    )
+
+    collecting := true
+    for collecting {
+        select {
+        case r, ok := <-resultCh:
+            if !ok {
+                collecting = false // all goroutines done
+                break
+            }
+            if r.Err != nil {
+                errors = append(errors, fmt.Errorf("%s: %w", r.Name, r.Err))
+            } else {
+                successes++
+            }
+            responses = append(responses, r)
+
+        case <-gCtx.Done():
+            partial = true
+            collecting = false
+            // Drain remaining results that have already arrived
+            for {
+                select {
+                case r, ok := <-resultCh:
+                    if !ok {
+                        goto done
+                    }
+                    if r.Err == nil {
+                        successes++
+                    } else {
+                        errors = append(errors, fmt.Errorf("%s: %w", r.Name, r.Err))
+                    }
+                    responses = append(responses, r)
+                default:
+                    goto done
+                }
+            }
+        done:
+        }
+    }
+
+    result := &AggregatedResult{
+        Responses: responses,
+        Errors:    errors,
+        Partial:   partial,
+        Duration:  time.Since(start),
+    }
+
+    if successes < fo.minRequired {
+        return result, fmt.Errorf("insufficient responses: got %d success(es), need %d (partial=%v)",
+            successes, fo.minRequired, partial)
+    }
+    return result, nil
+}
+
+func main() {
+    configs := []DownstreamConfig{
+        {Name: "service-a", Timeout: 100 * time.Millisecond, Weight: 1},
+        {Name: "service-b", Timeout: 200 * time.Millisecond, Weight: 1},
+        {Name: "service-c", Timeout: 300 * time.Millisecond, Weight: 2},
+        {Name: "service-d", Timeout: 50 * time.Millisecond, Weight: 1},
+    }
+
+    fo := NewFanOut(configs, 2) // need at least 2 successful
+
+    callFn := func(ctx context.Context, name string) (interface{}, error) {
+        latencies := map[string]time.Duration{
+            "service-a": 50 * time.Millisecond,
+            "service-b": 150 * time.Millisecond,
+            "service-c": 400 * time.Millisecond, // will be slow
+            "service-d": 30 * time.Millisecond,
+        }
+        select {
+        case <-ctx.Done():
+            return nil, fmt.Errorf("%s: context cancelled", name)
+        case <-time.After(latencies[name]):
+            return fmt.Sprintf("%s-result", name), nil
+        }
+    }
+
+    ctx := context.Background()
+    result, err := fo.Do(ctx, 250*time.Millisecond, callFn)
+
+    fmt.Printf("duration=%s partial=%v err=%v\n", result.Duration.Round(time.Millisecond), result.Partial, err)
+    for _, r := range result.Responses {
+        if r.Err != nil {
+            fmt.Printf("  [%s] ERROR %v (latency=%s)\n", r.Name, r.Err, r.Latency.Round(time.Millisecond))
+        } else {
+            fmt.Printf("  [%s] OK val=%v (latency=%s)\n", r.Name, r.Value, r.Latency.Round(time.Millisecond))
+        }
+    }
+    if len(result.Errors) > 0 {
+        fmt.Println("errors:", result.Errors)
+    }
+}
+```
+**Time:** O(min(max_downstream, global_deadline)) | **Space:** O(N) channel buffer
+
+### Production Considerations
+| Aspect | Details |
+|--------|---------|
+| Scalability | Fan-out N=50+ services is common in microservices; goroutine per downstream is fine |
+| Edge Cases | Partial drain after global deadline ensures no goroutines are left blocked on full channel |
+| Error Handling | minRequired allows degraded-mode responses; partial flag signals to callers |
+| Memory | Buffered channel size N; goroutines can always send even after caller returned |
+| Concurrency | Per-downstream CB prevents cascading failures; global deadline caps total wait |
+
+### Visual Explanation
+```mermaid
+flowchart TD
+    A["Do(ctx, 250ms, fn)"] --> B["gCtx = WithTimeout(250ms)"]
+    B --> C["spawn goroutine per downstream"]
+    C --> D["dCtx = WithTimeout(per-downstream)"]
+    D --> E["cb.Allow()? if open: short-circuit"]
+    D --> F["fn(dCtx, name)"]
+    F --> G["resultCh <- result"]
+    H["collect loop: select resultCh / gCtx.Done()"] --> I{"all arrived?"}
+    I -- yes --> J["check minRequired"]
+    H -- "gCtx.Done()" --> K["partial=true, drain available"]
+    K --> J
+    J -- "ok" --> L["return AggregatedResult"]
+    J -- "insufficient" --> M["return error"]
+```
+
+### Interviewer Questions
+1. Why must the result channel be buffered with size N?
+2. How does per-downstream timeout interact with the global deadline?
+3. What happens to goroutines that are still running when the global deadline fires?
+4. How would you implement request hedging (duplicate to a backup if primary is slow)?
+5. When is it correct to ignore errors from some downstreams (minRequired < N)?
+6. How would you weight results differently from different downstreams?
+7. What is the thundering herd problem in fan-out and how do you mitigate it?
+
+### Follow-Up Questions
+1. Add request hedging: if service-a takes > 80ms, fire duplicate to service-a-replica
+2. Implement speculation: return first successful response, cancel remaining
+3. Add adaptive timeouts: measure p95 latency per service and use that as timeout
+4. Implement merge: aggregate numeric results from all services (sum, average, max)
+5. Add tracing: propagate trace context to all downstream calls and record fan-out spans
+
+---
+
+## Company-Style Questions
+
+### Google Style (3Q — Concurrent Algorithms)
+
+**G1. Parallel Merge Sort**
+> Implement merge sort where each split spawns a goroutine, limited by a semaphore to `runtime.NumCPU()` goroutines to avoid spawning O(N) goroutines for large arrays.
+
+```
+Input:  []int of size N
+Output: sorted []int
+Constraint: at most NumCPU() goroutines active concurrently
+Follow-up: measure speedup vs sequential merge sort on 10M elements
+```
+
+**G2. Concurrent LRU Cache**
+> Implement a thread-safe LRU cache using a goroutine as the cache manager (actor model). All `Get`/`Put` operations are sent as messages to the manager goroutine; responses are returned on a reply channel. This avoids lock contention.
+
+```
+Capacity: N
+Get(key) (value, bool)
+Put(key, value)
+Evict: least recently used when full
+Follow-up: compare actor-model LRU latency vs mutex-based LRU under high contention
+```
+
+**G3. Streaming Median with Two Goroutines**
+> Maintain a running median of a stream of integers. Use two goroutines: one maintains a max-heap (lower half), one maintains a min-heap (upper half). Balance via a channel-based protocol.
+
+```
+Input:  <-chan int (unbounded stream)
+Output: <-chan float64 (median after each element)
+Constraint: goroutines communicate only via channels (no shared state)
+Follow-up: extend to sliding window median (last K elements)
+```
+
+---
+
+### Uber Style (3Q — Real-Time Goroutine Patterns)
+
+**U1. Real-Time Trip Pricing Engine**
+> A ride request arrives. Concurrently: (1) fetch driver supply from cache, (2) fetch demand multiplier from ML service, (3) apply surge formula. Use errgroup with 150ms timeout. If ML service fails, fall back to last-known multiplier from Redis.
+
+```
+Input:  TripRequest{PickupLat, PickupLng, RequestTime}
+Output: PriceEstimate{BasePrice, SurgeMult, Total, Breakdown}
+Constraint: p99 < 200ms; degrade gracefully on ML service failure
+Follow-up: cache surge multiplier per geo-hex with TTL
+```
+
+**U2. Driver Location Stream Processor**
+> 50,000 drivers send GPS updates every 2 seconds. For each update: update in-memory R-tree, check if driver entered a surge zone (async), emit event if zone changed. Use goroutine pool with fan-out.
+
+```
+Input:  <-chan GPSUpdate (rate: 25,000/s)
+Process: update position, zone check, event emit
+Constraint: < 1ms processing per update, no drops allowed
+Follow-up: partition by geo-hash for parallel processing
+```
+
+**U3. Concurrent ETA Calculation**
+> For a trip with 5 waypoints, concurrently fetch ETA for each segment from a routing service. If any segment fails, use estimated ETA (distance/speed). Timeout per segment: 80ms. Sum partial ETAs.
+
+```
+Input:  []Waypoint (5 points)
+Output: ETAResult{TotalSeconds, Segments []SegmentETA, HasEstimates bool}
+Constraint: total response < 100ms regardless of service failures
+Follow-up: add confidence interval for estimated segments
+```
+
+---
+
+### Amazon Style (3Q — Distributed Goroutine Orchestration)
+
+**A1. Order Processing Pipeline with Goroutines**
+> An order enters a pipeline: (1) validate inventory (parallel for all items), (2) reserve items (sequential, transactional), (3) charge payment, (4) send confirmation email (async, fire-and-forget). Model as goroutines with channel-based pipeline stages.
+
+```
+Input:  Order{ID, Items []OrderItem, PaymentInfo}
+Output: OrderResult{Success bool, TransactionID, Error}
+Constraint: stages 1-3 must complete atomically; stage 4 is best-effort
+Follow-up: add compensation (saga pattern) if payment fails after inventory reserved
+```
+
+**A2. Distributed Cache Warming**
+> On startup, warm a local cache from DynamoDB. 10,000 records to fetch; DynamoDB allows max 100 concurrent requests. Fan out fetches with a semaphore; any failure retries up to 3 times; warm is complete when all records fetched or marked failed.
+
+```
+Input:  []string (DynamoDB keys)
+Output: map[string]CacheEntry, []string (failed keys)
+Constraint: max 100 concurrent DynamoDB calls; total time < 30s
+Follow-up: implement incremental warming: fetch most-accessed keys first
+```
+
+**A3. SQS Consumer with Goroutine Pool and DLQ**
+> Poll SQS for messages, process in a worker pool of N goroutines. On failure, retry up to 3 times with backoff; after 3 failures, move to DLQ. Track: messages processed, retried, DLQ'd. Gracefully shutdown on SIGTERM.
+
+```
+Input:  SQS queue URL, DLQ URL, N workers
+Process: poll -> process -> ack or retry
+Constraint: no duplicate processing; graceful drain on shutdown
+Follow-up: implement batch delete (up to 10 messages per DeleteMessageBatch call)
+```
+
+---
+
+### Stripe Style (2Q — Reliable Background Processing)
+
+**S1. Idempotent Payment Retry Worker**
+> A background goroutine retries failed payment charges. Each charge has an idempotency key stored in Redis. Retry with exponential backoff (1s, 2s, 4s, 8s, max 5 retries). Skip if idempotency key already shows "succeeded". Emit `payment.failed` event after max retries.
+
+```
+Input:  <-chan FailedCharge
+Process: check idempotency -> charge API -> update Redis -> emit event
+Constraint: exactly-once charge (idempotency key prevents double-charge)
+Follow-up: implement jitter in backoff to avoid synchronized retries
+```
+
+**S2. Webhook Delivery with Fan-Out and Retry**
+> For each payment event, deliver to all registered webhook endpoints concurrently. Track delivery status per endpoint. Retry failed deliveries up to 5 times with exponential backoff. Expose delivery status via REST API. Goroutine pool of 20.
+
+```
+Input:  PaymentEvent, []WebhookEndpoint
+Process: fan-out delivery -> record status -> schedule retries
+Constraint: p99 delivery < 5s for first attempt; log all failures
+Follow-up: add HMAC signature verification for webhook authenticity
+```
+
+---
+
+### Razorpay Style (2Q — Payment Goroutine Patterns)
+
+**R1. Concurrent UPI Payment Verification**
+> 5 bank PSPs each have an API to check UPI transaction status. Call all 5 concurrently. Accept the first "SUCCESS" response and cancel remaining calls. If all return within 2s without SUCCESS, return the majority response (or PENDING if split). Model with goroutines and context cancellation.
+
+```
+Input:  TransactionID, []PSPConfig (5 banks)
+Output: VerificationResult{Status, ConfidenceScore, RespondedPSPs}
+Constraint: first SUCCESS short-circuits; 2s global timeout
+Follow-up: weight PSPs by historical accuracy
+```
+
+**R2. Settlement Batch Processor**
+> Process end-of-day settlement for 100,000 merchants. Each settlement: validate account, compute net amount, trigger payout API, record in DB. Use goroutine pool of 50. Partition merchants by bank to avoid overwhelming any single bank's API (max 10 concurrent per bank). Return summary: success count, failed IDs.
+
+```
+Input:  []MerchantSettlement (100K records)
+Output: SettlementSummary{Success, Failed []string, Duration}
+Constraint: per-bank semaphore limit 10; total < 10 minutes; idempotent on retry
+Follow-up: implement hot-restart: checkpoint progress to Redis; resume from last position
+```
+
+---
