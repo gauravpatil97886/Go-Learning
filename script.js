@@ -137,6 +137,9 @@ const KEYS = {
    ══════════════════════════════════════════════════════════════ */
 
 document.addEventListener('DOMContentLoaded', () => {
+  if (location.protocol === 'file:') {
+    showFileProtocolBanner();
+  }
   loadPersistedState();
   initLibraries();
   buildSearchIndex();
@@ -144,6 +147,28 @@ document.addEventListener('DOMContentLoaded', () => {
   bindEventListeners();
   handleInitialRoute();
 });
+
+function showFileProtocolBanner() {
+  const banner = document.createElement('div');
+  banner.id = 'file-protocol-banner';
+  banner.style.cssText = [
+    'position:fixed', 'top:0', 'left:0', 'right:0', 'z-index:9999',
+    'background:#c0392b', 'color:#fff', 'padding:10px 16px',
+    'font-family:monospace', 'font-size:13px', 'line-height:1.5',
+    'display:flex', 'align-items:center', 'justify-content:space-between',
+    'gap:12px', 'box-shadow:0 2px 8px rgba(0,0,0,0.4)'
+  ].join(';');
+  banner.innerHTML = `
+    <span>
+      ⚠️ <strong>Local file detected:</strong>
+      Markdown files cannot be loaded via <code>file://</code> — browsers block fetch() for local files.
+      Run a local server: <code>cd /home/choice/Go-Learning && python3 -m http.server 8080</code>
+      then open <a href="http://localhost:8080" style="color:#ffe082">http://localhost:8080</a>
+    </span>
+    <button onclick="this.parentElement.remove()" style="background:transparent;border:1px solid rgba(255,255,255,.5);color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;white-space:nowrap">✕ Dismiss</button>
+  `;
+  document.body.prepend(banner);
+}
 
 /** Restore state from localStorage */
 function loadPersistedState() {
@@ -429,7 +454,16 @@ async function loadTopic(path, pushHistory = true) {
     console.warn('GoForge: failed to load topic:', path, err.message);
     showPanel('error');
     const errEl = document.getElementById('error-message');
-    if (errEl) errEl.textContent = `"${path}" could not be loaded. This topic may not exist yet — check back soon!`;
+    if (errEl) {
+      if (location.protocol === 'file:') {
+        errEl.innerHTML = `<strong>File protocol restriction:</strong> Browsers block <code>fetch()</code> on <code>file://</code> URLs.<br><br>
+          Run a local server instead:<br>
+          <code>cd /home/choice/Go-Learning && python3 -m http.server 8080</code><br>
+          Then open <a href="http://localhost:8080">http://localhost:8080</a>`;
+      } else {
+        errEl.textContent = `"${path}" could not be loaded. This topic may not exist yet — check back soon!`;
+      }
+    }
   }
 }
 
