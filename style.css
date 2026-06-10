@@ -209,9 +209,10 @@ input, textarea { font-family: inherit; }
     var(--accent) 30%,
     var(--accent-2) 60%,
     transparent 100%);
-  opacity: 0.4;
+  opacity: 0.5;
   animation: header-glow 5s ease-in-out infinite alternate;
 }
+[data-theme="light"] #header::after { opacity: 0.7; }
 @keyframes header-glow {
   0%   { opacity: 0.2; background-position: 0% 0%; }
   100% { opacity: 0.6; background-position: 100% 0%; }
@@ -238,10 +239,18 @@ input, textarea { font-family: inherit; }
   letter-spacing: -0.04em;
   color: var(--text-primary);
   background: linear-gradient(135deg, #FFFFFF 0%, #F5C000 45%, #00C8F0 100%);
+  background-size: 200% 200%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
   animation: logo-shimmer 4s ease-in-out infinite alternate;
+}
+[data-theme="light"] .logo-text {
+  background: linear-gradient(135deg, #18130A 0%, #C4890A 50%, #0080AA 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 /* Search bar button */
@@ -789,6 +798,11 @@ input, textarea { font-family: inherit; }
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+[data-theme="light"] #markdown-body h1 {
+  background: linear-gradient(135deg, #18130A 0%, var(--accent) 55%, var(--accent-2) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
 
 #markdown-body h2 {
   font-size: 1.4rem;
@@ -1235,6 +1249,13 @@ input, textarea { font-family: inherit; }
   0%   { background-position: 0% 50%; }
   50%  { background-position: 100% 50%; }
   100% { background-position: 0% 50%; }
+}
+[data-theme="light"] .gradient-text {
+  background: linear-gradient(135deg, #C4890A 0%, #D49810 35%, #0080AA 70%, #7C3AED 100%);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .hero-subtitle {
@@ -1780,8 +1801,8 @@ input, textarea { font-family: inherit; }
   100% { background-position: 0% 50%; filter: brightness(1); }
 }
 @keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 6px var(--accent-glow); }
-  50%       { box-shadow: 0 0 18px var(--accent-glow), 0 0 32px var(--accent-glow); }
+  0%, 100% { box-shadow: 0 0 8px var(--accent-glow), 0 4px 20px rgba(0,0,0,0.3); }
+  50%       { box-shadow: 0 0 20px var(--accent-glow), 0 0 36px var(--accent-glow), 0 4px 20px rgba(0,0,0,0.3); }
 }
 @keyframes shimmer-bar {
   0%   { background-position: -200% 0; }
@@ -1827,11 +1848,29 @@ input, textarea { font-family: inherit; }
   }
 }
 
-/* ── HIGHLIGHT.JS LIGHT THEME ──────────────────────────────────── */
+/* ── LIGHT THEME TARGETED FIXES ────────────────────────────────── */
 [data-theme="light"] .hljs { background: #FDF8EE !important; }
-[data-theme="light"] #markdown-body pre { background: #FDF8EE !important; }
+[data-theme="light"] #markdown-body pre { background: #FDF8EE !important; border-color: rgba(160,120,30,0.2); }
 [data-theme="light"] .code-block-chrome { background: #EDE5D4; border-color: rgba(160,120,30,0.2); }
-[data-theme="light"] #markdown-body pre { border-color: rgba(160,120,30,0.2); }
+[data-theme="light"] .code-lang { color: #8A6820; }
+[data-theme="light"] #markdown-body :not(pre) > code {
+  background: #EDE5D4;
+  border-color: rgba(160,120,30,0.25);
+  color: #B05010;
+}
+[data-theme="light"] #markdown-body blockquote {
+  background: linear-gradient(135deg, rgba(196,137,10,0.08) 0%, rgba(196,137,10,0.03) 100%);
+}
+[data-theme="light"] .nav-topic.active::before {
+  background: linear-gradient(180deg, #C4890A 0%, #0080AA 100%);
+  box-shadow: 0 0 10px rgba(196,137,10,0.35);
+}
+[data-theme="light"] .icon-btn:hover { background: rgba(0,0,0,0.06); color: var(--text-primary); }
+[data-theme="light"] .search-bar-btn { background: #FFFFFF; }
+[data-theme="light"] #markdown-body table thead th { background: #EDE5D4; }
+[data-theme="light"] #markdown-body tbody tr:hover td { background: rgba(196,137,10,0.05); }
+[data-theme="light"] .stats-big-num { color: var(--accent); }
+[data-theme="light"] .wstat-num { color: var(--accent); }
 
 /* ── RESPONSIVE: WIDE SCREENS (TOC visible) ────────────────────── */
 @media (min-width: 1280px) {
