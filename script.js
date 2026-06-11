@@ -108,6 +108,30 @@ const NAVIGATION = [
       { title: 'Uber Style',             path: 'interview-prep/company-uber.md',            level: 'advanced' },
       { title: 'Stripe Style',           path: 'interview-prep/company-stripe.md',          level: 'advanced' },
     ]},
+  { id: 'ctc-prep', title: 'CTC Prep', emoji: '💰', color: '#f59e0b',
+    desc: 'Band-by-band roadmap: crack 10 LPA, 20 LPA, 30+ LPA roles.',
+    topics: [
+      { title: 'CTC Roadmap Overview',   path: 'ctc-prep/roadmap.md',       level: 'mixed' },
+      { title: '8–15 LPA Guide',         path: 'ctc-prep/10-15-lpa.md',     level: 'intermediate' },
+      { title: '15–25 LPA Guide',        path: 'ctc-prep/15-25-lpa.md',     level: 'advanced' },
+      { title: '25+ LPA Senior Guide',   path: 'ctc-prep/25-plus-lpa.md',   level: 'advanced' },
+    ]},
+  { id: 'system-design', title: 'System Design', emoji: '🏛', color: '#06b6d4',
+    desc: 'Architecture, scale, databases, caching, full case studies.',
+    topics: [
+      { title: 'SD Fundamentals',        path: 'system-design/01-fundamentals.md',         level: 'advanced' },
+      { title: 'Databases & Storage',    path: 'system-design/02-databases-storage.md',    level: 'advanced' },
+      { title: 'Caching & Messaging',    path: 'system-design/03-caching-messaging.md',    level: 'advanced' },
+      { title: 'Case Studies',           path: 'system-design/04-case-studies.md',         level: 'advanced' },
+    ]},
+  { id: 'dsa-go', title: 'DSA in Go', emoji: '⚔️', color: '#ec4899',
+    desc: 'LeetCode-style problems solved in idiomatic Go — arrays to DP.',
+    topics: [
+      { title: 'Arrays & Strings',       path: 'dsa-go/01-arrays-strings.md',    level: 'mixed' },
+      { title: 'Trees & Graphs',         path: 'dsa-go/02-trees-graphs.md',      level: 'mixed' },
+      { title: 'Dynamic Programming',    path: 'dsa-go/03-dynamic-programming.md', level: 'advanced' },
+      { title: 'Concurrent DS & Heap',   path: 'dsa-go/04-concurrency-ds.md',    level: 'advanced' },
+    ]},
 ];
 
 /* ── APP STATE ───────────────────────────────────────────────── */
@@ -141,6 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
     showFileProtocolBanner();
   }
   loadPersistedState();
+  loadFontScale();
   initLibraries();
   buildSearchIndex();
   renderNav();
@@ -514,6 +539,15 @@ async function renderMarkdown(markdown, path) {
       }
       loadTopic(out.join('/'));
     });
+  });
+
+  // Wrap tables for horizontal scroll on mobile
+  body.querySelectorAll('table').forEach(table => {
+    if (table.parentElement.classList.contains('table-scroll-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'table-scroll-wrap';
+    table.parentNode.insertBefore(wrap, table);
+    wrap.appendChild(table);
   });
 
   // Highlight any remaining unhighlighted code blocks
@@ -1376,6 +1410,113 @@ function bindEventListeners() {
       closeSidebar();
     }
   });
+
+  // Swipe right to open sidebar, left to close (mobile)
+  initSwipeGestures();
+}
+
+/* ══════════════════════════════════════════════════════════════
+   SWIPE GESTURES (mobile sidebar)
+   ══════════════════════════════════════════════════════════════ */
+
+function initSwipeGestures() {
+  let touchStartX = 0, touchStartY = 0;
+  const SWIPE_THRESHOLD = 60;
+  const EDGE_ZONE = 40; // px from left edge to trigger open
+
+  document.addEventListener('touchstart', e => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+
+  document.addEventListener('touchend', e => {
+    if (!e.changedTouches.length) return;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    // Only horizontal swipes (angle < 45°)
+    if (Math.abs(dy) > Math.abs(dx)) return;
+
+    if (dx > SWIPE_THRESHOLD && touchStartX < EDGE_ZONE && !STATE.sidebarOpen) {
+      openSidebar();
+    } else if (dx < -SWIPE_THRESHOLD && STATE.sidebarOpen) {
+      closeSidebar();
+    }
+  }, { passive: true });
+}
+
+/* ══════════════════════════════════════════════════════════════
+   MOBILE TOC BOTTOM SHEET
+   ══════════════════════════════════════════════════════════════ */
+
+function openMobTOC() {
+  const panel = document.getElementById('mob-toc-panel');
+  const overlay = document.getElementById('mob-toc-overlay');
+  const nav = document.getElementById('mob-toc-nav');
+  if (!panel || !nav) return;
+
+  // Build TOC from current headings
+  const headings = [...document.querySelectorAll('#markdown-body h2, #markdown-body h3')];
+  if (!headings.length) {
+    nav.innerHTML = '<p style="padding:16px 20px;color:var(--text-muted);font-size:.84rem">No sections found in this topic.</p>';
+  } else {
+    nav.innerHTML = headings.map(h => {
+      const isH3 = h.tagName === 'H3';
+      const id = h.id || slugify(h.textContent);
+      return `<a href="#${id}" class="${isH3 ? 'toc-h3' : ''}" onclick="closeMobTOC();scrollToHeading('${id}');return false">${escapeHtml(h.textContent)}</a>`;
+    }).join('');
+  }
+
+  panel.classList.add('open');
+  if (overlay) overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeMobTOC() {
+  document.getElementById('mob-toc-panel')?.classList.remove('open');
+  document.getElementById('mob-toc-overlay')?.classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+/* ══════════════════════════════════════════════════════════════
+   FONT SIZE CONTROLS
+   ══════════════════════════════════════════════════════════════ */
+
+const FONT_SCALES = [0.82, 0.9, 1, 1.1, 1.2, 1.35];
+let fontScaleIdx = 2; // default = 1 (100%)
+
+function changeFontSize(dir) {
+  fontScaleIdx = Math.max(0, Math.min(FONT_SCALES.length - 1, fontScaleIdx + dir));
+  const scale = FONT_SCALES[fontScaleIdx];
+  document.documentElement.style.setProperty('--font-scale', scale);
+  const label = document.getElementById('font-scale-label');
+  if (label) label.textContent = Math.round(scale * 100) + '%';
+  try { localStorage.setItem('gf-font-scale', fontScaleIdx); } catch {}
+}
+
+function loadFontScale() {
+  try {
+    const saved = parseInt(localStorage.getItem('gf-font-scale'));
+    if (!isNaN(saved) && saved >= 0 && saved < FONT_SCALES.length) {
+      fontScaleIdx = saved;
+      const scale = FONT_SCALES[fontScaleIdx];
+      document.documentElement.style.setProperty('--font-scale', scale);
+      const label = document.getElementById('font-scale-label');
+      if (label) label.textContent = Math.round(scale * 100) + '%';
+    }
+  } catch {}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   READING MODE
+   ══════════════════════════════════════════════════════════════ */
+
+function enterReadingMode() {
+  document.body.classList.add('reading-mode');
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+function exitReadingMode() {
+  document.body.classList.remove('reading-mode');
 }
 
 /* ══════════════════════════════════════════════════════════════
