@@ -213,6 +213,72 @@ const KEYS = {
   theme:     'gf-theme-v1',
 };
 
+/* ── GLOBAL ERROR REPORTER ───────────────────────────────────── */
+/* Any uncaught JS error or promise rejection surfaces as an on-page
+   banner with a pre-filled GitHub issue link, so users can report it. */
+
+const ERROR_REPORT_REPO = 'https://github.com/gauravpatil97886/GoForge/issues/new';
+let _errorToastCount = 0;
+
+function showErrorToast(message, detail) {
+  // Cap simultaneous toasts so an error loop can't flood the page
+  if (_errorToastCount >= 3 || !document.body) return;
+  _errorToastCount++;
+
+  const issueTitle = encodeURIComponent(`[Bug] ${String(message).slice(0, 80)}`);
+  const issueBody = encodeURIComponent(
+    `**Error:** ${message}\n\n` +
+    `**Details:**\n\`\`\`\n${String(detail || 'n/a').slice(0, 1500)}\n\`\`\`\n\n` +
+    `**Page:** ${location.href}\n` +
+    `**Browser:** ${navigator.userAgent}\n` +
+    `**Time:** ${new Date().toISOString()}`
+  );
+
+  const toast = document.createElement('div');
+  toast.className = 'error-toast';
+  toast.setAttribute('role', 'alert');
+  toast.innerHTML = `
+    <div class="error-toast-head">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <span class="error-toast-title">Something went wrong</span>
+      <button class="error-toast-close" aria-label="Dismiss">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="error-toast-msg"></div>
+    <div class="error-toast-actions">
+      <a href="${ERROR_REPORT_REPO}?title=${issueTitle}&body=${issueBody}" target="_blank" rel="noopener noreferrer" class="error-toast-report">Report this issue</a>
+      <button class="error-toast-reload">Reload page</button>
+    </div>`;
+
+  toast.querySelector('.error-toast-msg').textContent = String(message).slice(0, 200);
+  toast.querySelector('.error-toast-close').addEventListener('click', () => {
+    toast.remove();
+    _errorToastCount--;
+  });
+  toast.querySelector('.error-toast-reload').addEventListener('click', () => location.reload());
+
+  document.body.appendChild(toast);
+
+  // Auto-dismiss after 20s
+  setTimeout(() => {
+    if (toast.isConnected) { toast.remove(); _errorToastCount--; }
+  }, 20000);
+}
+
+window.addEventListener('error', e => {
+  const detail = e.error?.stack || `${e.filename || ''}:${e.lineno || ''}:${e.colno || ''}`;
+  showErrorToast(e.message || 'Unknown script error', detail);
+});
+
+window.addEventListener('unhandledrejection', e => {
+  const reason = e.reason;
+  const msg = (reason && reason.message) || String(reason) || 'Unhandled promise rejection';
+  showErrorToast(msg, reason && reason.stack);
+});
+
 /* ══════════════════════════════════════════════════════════════
    INITIALIZATION
    ══════════════════════════════════════════════════════════════ */
@@ -567,11 +633,11 @@ async function loadTopic(path, pushHistory = true) {
         <strong>Fix:</strong> Go to your repo <a href="https://github.com/gauravpatil97886/GoForge/settings/pages" target="_blank">Settings → Pages</a>
         and change Source to <strong>GitHub Actions</strong>, then wait 2 minutes.`;
     } else {
+      const issueUrl = `${ERROR_REPORT_REPO}?title=${encodeURIComponent(`[Content] Failed to load ${path}`)}&body=${encodeURIComponent(`**Topic:** ${path}\n**Error:** ${err.message}\n**URL:** ${fullUrl}\n**Browser:** ${navigator.userAgent}`)}`;
       errEl.innerHTML = `Failed to load: <code>${path}</code><br>
         <small>Status: <strong>${err.message}</strong> &nbsp;|&nbsp; URL: <code>${fullUrl}</code></small><br><br>
-        GitHub Pages may still be deploying. Wait 2–3 min and refresh.<br>
-        Or go to <a href="https://github.com/gauravpatil97886/GoForge/settings/pages" target="_blank">Settings → Pages</a>
-        and set Source to <strong>GitHub Actions</strong>.`;
+        Try refreshing in a minute — GitHub Pages may still be deploying.<br>
+        If it keeps failing, <a href="${issueUrl}" target="_blank" rel="noopener noreferrer">report this issue</a> so it gets fixed.`;
     }
   }
 }
