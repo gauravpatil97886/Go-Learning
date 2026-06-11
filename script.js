@@ -15,9 +15,27 @@ const PLATFORM = {
   copyright: '© 2026 Gaurav Patil — GoForge Platform. All Rights Reserved.',
 };
 
+/* ── SVG ICON LIBRARY (Lucide-style, 20×20 @ 24 viewBox) ─────── */
+const ICONS = {
+  foundations:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
+  intermediate:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`,
+  concurrency:    `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  advanced:       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`,
+  applications:   `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
+  patterns:       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>`,
+  practice:       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+  interview:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>`,
+  'ctc-prep':     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`,
+  'system-design':`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
+  'dsa-go':       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+  goroutine:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  channel:        `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
+  target:         `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>`,
+};
+
 /* ── NAVIGATION DATA ─────────────────────────────────────────── */
 const NAVIGATION = [
-  { id: 'foundations', title: 'Foundations', emoji: '🏗', color: '#00ACD7',
+  { id: 'foundations', title: 'Foundations', color: '#00ACD7',
     desc: 'Variables, types, functions, interfaces & error handling.',
     topics: [
       { title: 'Getting Started',     path: '01-foundations/01-getting-started.md' },
@@ -29,7 +47,7 @@ const NAVIGATION = [
       { title: 'Closures',            path: '01-foundations/07-closures.md' },
       { title: 'Strings & Runes',     path: '01-foundations/08-strings-runes.md' },
     ]},
-  { id: 'intermediate', title: 'Intermediate', emoji: '⚙️', color: '#7c3aed',
+  { id: 'intermediate', title: 'Intermediate', color: '#7c3aed',
     desc: 'Packages, pointers, structs, slices, maps & type system.',
     topics: [
       { title: 'Packages & Modules',  path: '02-intermediate/01-packages-modules.md' },
@@ -39,7 +57,7 @@ const NAVIGATION = [
       { title: 'Maps',                path: '02-intermediate/05-maps.md' },
       { title: 'Type System',         path: '02-intermediate/06-type-system.md' },
     ]},
-  { id: 'concurrency', title: 'Concurrency', emoji: '⚡', color: '#f59e0b',
+  { id: 'concurrency', title: 'Concurrency', color: '#f59e0b',
     desc: 'Goroutines, channels, select, sync primitives & context.',
     topics: [
       { title: 'Concurrency Basics',  path: '03-concurrency/01-foundations.md' },
@@ -51,7 +69,7 @@ const NAVIGATION = [
       { title: 'Context Package',     path: '03-concurrency/07-context.md' },
       { title: 'Advanced Patterns',   path: '03-concurrency/08-advanced-patterns.md' },
     ]},
-  { id: 'advanced', title: 'Advanced', emoji: '🔬', color: '#10b981',
+  { id: 'advanced', title: 'Advanced', color: '#10b981',
     desc: 'Generics, reflection, testing, memory & performance.',
     topics: [
       { title: 'Generics',                 path: '04-advanced/01-generics.md' },
@@ -60,7 +78,7 @@ const NAVIGATION = [
       { title: 'Memory & GC',              path: '04-advanced/04-memory-gc.md' },
       { title: 'Performance',              path: '04-advanced/05-performance.md' },
     ]},
-  { id: 'applications', title: 'Applications', emoji: '🌐', color: '#ef4444',
+  { id: 'applications', title: 'Applications', color: '#ef4444',
     desc: 'HTTP servers, REST APIs, databases, microservices & CLI.',
     topics: [
       { title: 'HTTP & Web Servers', path: '05-applications/01-http-web.md' },
@@ -69,7 +87,7 @@ const NAVIGATION = [
       { title: 'Microservices',      path: '05-applications/04-microservices.md' },
       { title: 'CLI Tools',          path: '05-applications/05-cli-tools.md' },
     ]},
-  { id: 'patterns', title: 'Patterns', emoji: '🎨', color: '#8b5cf6',
+  { id: 'patterns', title: 'Patterns', color: '#8b5cf6',
     desc: 'Design patterns, concurrency patterns & functional style.',
     topics: [
       { title: 'Design Patterns',       path: '06-patterns/01-design-patterns.md' },
@@ -77,7 +95,7 @@ const NAVIGATION = [
       { title: 'Error Patterns',        path: '06-patterns/03-error-patterns.md' },
       { title: 'Functional Patterns',   path: '06-patterns/04-functional-patterns.md' },
     ]},
-  { id: 'practice', title: 'Practice', emoji: '💻', color: '#06b6d4',
+  { id: 'practice', title: 'Practice', color: '#06b6d4',
     desc: 'Hands-on coding exercises at every difficulty level.',
     topics: [
       { title: 'Variables & Types',        path: 'coding-practice/foundations/01-variables-types.md', level: 'mixed' },
@@ -97,7 +115,7 @@ const NAVIGATION = [
       { title: 'HTTP APIs Practice',       path: 'coding-practice/applications/01-http-apis.md', level: 'mixed' },
       { title: 'Databases Practice',       path: 'coding-practice/applications/02-databases.md', level: 'mixed' },
     ]},
-  { id: 'interview', title: 'Interview', emoji: '🎯', color: '#f97316',
+  { id: 'interview', title: 'Interview', color: '#f97316',
     desc: 'Google, Uber, Stripe-style Q&A and system design challenges.',
     topics: [
       { title: 'Beginner Q&A',           path: 'interview-prep/beginner.md',                level: 'beginner' },
@@ -108,7 +126,7 @@ const NAVIGATION = [
       { title: 'Uber Style',             path: 'interview-prep/company-uber.md',            level: 'advanced' },
       { title: 'Stripe Style',           path: 'interview-prep/company-stripe.md',          level: 'advanced' },
     ]},
-  { id: 'ctc-prep', title: 'CTC Prep', emoji: '💰', color: '#f59e0b',
+  { id: 'ctc-prep', title: 'CTC Prep', color: '#f59e0b',
     desc: 'Band-by-band roadmap: crack 10 LPA, 20 LPA, 30+ LPA roles.',
     topics: [
       { title: 'CTC Roadmap Overview',   path: 'ctc-prep/roadmap.md',       level: 'mixed' },
@@ -116,7 +134,7 @@ const NAVIGATION = [
       { title: '15–25 LPA Guide',        path: 'ctc-prep/15-25-lpa.md',     level: 'advanced' },
       { title: '25+ LPA Senior Guide',   path: 'ctc-prep/25-plus-lpa.md',   level: 'advanced' },
     ]},
-  { id: 'system-design', title: 'System Design', emoji: '🏛', color: '#06b6d4',
+  { id: 'system-design', title: 'System Design', color: '#06b6d4',
     desc: 'Architecture, scale, databases, caching, full case studies.',
     topics: [
       { title: 'SD Fundamentals',        path: 'system-design/01-fundamentals.md',         level: 'advanced' },
@@ -124,13 +142,13 @@ const NAVIGATION = [
       { title: 'Caching & Messaging',    path: 'system-design/03-caching-messaging.md',    level: 'advanced' },
       { title: 'Case Studies',           path: 'system-design/04-case-studies.md',         level: 'advanced' },
     ]},
-  { id: 'dsa-go', title: 'DSA in Go', emoji: '⚔️', color: '#ec4899',
+  { id: 'dsa-go', title: 'DSA in Go', color: '#ec4899',
     desc: 'LeetCode-style problems solved in idiomatic Go — arrays to DP.',
     topics: [
-      { title: 'Arrays & Strings',       path: 'dsa-go/01-arrays-strings.md',    level: 'mixed' },
-      { title: 'Trees & Graphs',         path: 'dsa-go/02-trees-graphs.md',      level: 'mixed' },
+      { title: 'Arrays & Strings',       path: 'dsa-go/01-arrays-strings.md',      level: 'mixed' },
+      { title: 'Trees & Graphs',         path: 'dsa-go/02-trees-graphs.md',        level: 'mixed' },
       { title: 'Dynamic Programming',    path: 'dsa-go/03-dynamic-programming.md', level: 'advanced' },
-      { title: 'Concurrent DS & Heap',   path: 'dsa-go/04-concurrency-ds.md',    level: 'advanced' },
+      { title: 'Concurrent DS & Heap',   path: 'dsa-go/04-concurrency-ds.md',      level: 'advanced' },
     ]},
 ];
 
@@ -297,7 +315,7 @@ function buildSearchIndex() {
         path:      topic.path,
         section:   section.title,
         sectionId: section.id,
-        emoji:     section.emoji,
+        icon:      ICONS[section.id] || ICONS.foundations,
         color:     section.color,
         level:     topic.level || null,
       });
@@ -351,7 +369,7 @@ function buildSectionEl(section) {
   header.setAttribute('aria-expanded', String(hasActive));
   header.innerHTML = `
     <span class="nav-section-dot" style="background:${section.color};color:${section.color}"></span>
-    <span class="nav-section-emoji">${section.emoji}</span>
+    <span class="nav-section-icon" style="color:${section.color}">${ICONS[section.id] || ICONS.foundations}</span>
     <span class="nav-section-title">${escapeHtml(section.title)}</span>
     <span class="nav-section-count">${section.topics.length}</span>
     <svg class="nav-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -896,7 +914,7 @@ function renderWelcome() {
         <div class="continue-body">
           <div class="continue-label">Pick up where you left off</div>
           <div class="continue-title">${escapeHtml(lastEntry.title)}</div>
-          <div class="continue-section">${lastEntry.emoji} ${escapeHtml(lastEntry.section)}</div>
+          <div class="continue-section" style="display:flex;align-items:center;gap:5px;color:var(--text-muted);font-size:.73rem"><span style="color:${lastEntry.color}">${lastEntry.icon}</span>${escapeHtml(lastEntry.section)}</div>
         </div>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--accent);flex-shrink:0">
           <path d="m9 18 6-6-6-6"/>
@@ -915,7 +933,7 @@ function renderWelcome() {
             onclick="loadFirstTopic('${escapeAttr(section.id)}')"
             aria-label="Start ${escapeHtml(section.title)}">
             <div class="lp-card-header">
-              <span class="lp-emoji">${section.emoji}</span>
+              <span class="lp-icon" style="color:${section.color}">${ICONS[section.id] || ICONS.foundations}</span>
               <span class="lp-title">${escapeHtml(section.title)}</span>
             </div>
             <div class="lp-desc">${escapeHtml(section.desc)}</div>
@@ -935,17 +953,17 @@ function renderWelcome() {
       <div class="welcome-section-title">Featured Topics</div>
       <div class="featured-grid">
         <button class="featured-card" onclick="loadTopic('03-concurrency/02-goroutines.md')" aria-label="Open Goroutines">
-          <span class="featured-card-emoji">⚡</span>
+          <span class="featured-card-icon" style="color:#f59e0b">${ICONS.goroutine}</span>
           <div class="featured-card-title">Goroutines Deep Dive</div>
           <div class="featured-card-desc">Understand Go's lightweight concurrency model, the runtime scheduler, and goroutine lifecycle.</div>
         </button>
         <button class="featured-card" onclick="loadTopic('03-concurrency/03-channels.md')" aria-label="Open Channels">
-          <span class="featured-card-emoji">📡</span>
+          <span class="featured-card-icon" style="color:#00ACD7">${ICONS.channel}</span>
           <div class="featured-card-title">Channels & Communication</div>
           <div class="featured-card-desc">Typed conduits for goroutine communication. Buffered vs unbuffered, directional channels.</div>
         </button>
         <button class="featured-card" onclick="loadTopic('interview-prep/concurrency-interviews.md')" aria-label="Open Interview Prep">
-          <span class="featured-card-emoji">🎯</span>
+          <span class="featured-card-icon" style="color:#f97316">${ICONS.target}</span>
           <div class="featured-card-title">Concurrency Interviews</div>
           <div class="featured-card-desc">Real interview questions on goroutines, race conditions, deadlocks, and channel patterns.</div>
         </button>
@@ -1054,7 +1072,7 @@ function renderSearchResults(query) {
     }
     html += `<div class="search-result-item" role="option" data-path="${escapeAttr(item.path)}" data-index="${i}"
       onclick="selectSearchResult('${escapeAttr(item.path)}')" aria-selected="false">
-      <div class="sri-icon">${item.emoji}</div>
+      <div class="sri-icon" style="color:${item.color}">${item.icon}</div>
       <div class="sri-body">
         <div class="sri-title">${highlightQuery(item.title, query)}</div>
       </div>
@@ -1246,7 +1264,7 @@ function showStats() {
     const sp   = tot ? Math.round((done / tot) * 100) : 0;
     return `<div class="stats-section-row">
       <span class="stats-section-dot" style="background:${section.color}"></span>
-      <span class="stats-section-emoji" style="font-size:.85rem">${section.emoji}</span>
+      <span class="stats-section-icon" style="color:${section.color};display:flex;align-items:center">${ICONS[section.id] || ICONS.foundations}</span>
       <span class="stats-section-name">${escapeHtml(section.title)}</span>
       <span class="stats-section-bar">
         <span class="stats-section-bar-fill" style="width:${sp}%;background:${section.color}"></span>
