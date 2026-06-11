@@ -32,6 +32,14 @@ const ICONS = {
   goroutine:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
   channel:        `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
   target:         `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>`,
+  search:         `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  progress:       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
+  moon:           `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`,
+  offline:        `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 17l4 4 4-4"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>`,
+  diagram:        `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+  gesture:        `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>`,
+  play:           `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>`,
+  arrow:          `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
 };
 
 /* ── NAVIGATION DATA ─────────────────────────────────────────── */
@@ -161,6 +169,47 @@ const NAVIGATION = [
     topics: [
       { title: 'Engineering Blogs', path: '__blogs__' },
     ]},
+];
+
+/* ── HOME PAGE DATA ──────────────────────────────────────────── */
+/* Goal-oriented entry points. `sections` drives the lesson count. */
+const HOME_PATHS = [
+  { title: 'Learn Go from Zero', color: '#00ACD7', icon: 'foundations',
+    desc: 'Syntax to production patterns — the full curriculum in reading order.',
+    sections: ['foundations', 'intermediate', 'concurrency', 'advanced', 'applications', 'patterns'],
+    metaNote: 'lessons', target: '01-foundations/01-getting-started.md' },
+  { title: 'Crack the Interview', color: '#f97316', icon: 'interview',
+    desc: 'Company-style Q&A, behavioral rounds and CTC-band roadmaps.',
+    sections: ['interview', 'ctc-prep'],
+    metaNote: 'guides · 6 companies', target: 'interview-prep/beginner.md' },
+  { title: 'Master DSA in Go', color: '#ec4899', icon: 'dsa-go',
+    desc: '100 LeetCode-style problems solved in idiomatic Go.',
+    sections: ['dsa-go'],
+    metaNote: 'tracks · 100 problems', target: 'dsa-go/01-arrays-strings.md' },
+  { title: 'Design Systems at Scale', color: '#06b6d4', icon: 'system-design',
+    desc: 'Architecture, storage, caching and complete case studies.',
+    sections: ['system-design'],
+    metaNote: 'modules · 5 case studies', target: 'system-design/01-fundamentals.md' },
+];
+
+/* The six practice difficulty levels (colors come from --l1…--l6 tokens). */
+const HOME_LEVELS = [
+  { lvl: 'L1', name: 'Beginner',   note: 'Syntax & basics',   path: 'coding-practice/foundations/01-variables-types.md' },
+  { lvl: 'L2', name: 'Easy',       note: 'Apply concepts',    path: 'coding-practice/foundations/02-functions-closures.md' },
+  { lvl: 'L3', name: 'Medium',     note: 'Combine ideas',     path: 'coding-practice/intermediate/01-arrays-slices.md' },
+  { lvl: 'L4', name: 'Advanced',   note: 'Tricky & deep',     path: 'coding-practice/concurrency/01-goroutines.md' },
+  { lvl: 'L5', name: 'Interview',  note: 'Company-style',     path: 'coding-practice/concurrency/05-patterns.md' },
+  { lvl: 'L6', name: 'Production', note: 'Real-world bugs',   path: 'coding-practice/concurrency/06-debugging-exercises.md' },
+];
+
+/* Platform capabilities shown in the home feature strip. */
+const HOME_FEATURES = [
+  { icon: 'search',   title: 'Fuzzy Search',        desc: 'Jump to any topic with Ctrl + K', action: 'openSearch()' },
+  { icon: 'progress', title: 'Progress Tracking',   desc: 'Every finished topic, remembered locally' },
+  { icon: 'moon',     title: 'Dark & Light Themes', desc: 'Gold-on-navy or clean paper' },
+  { icon: 'offline',  title: 'Offline-Friendly',    desc: 'Lessons cached for instant reloads' },
+  { icon: 'diagram',  title: 'Mermaid Diagrams',    desc: 'Architecture rendered inline' },
+  { icon: 'gesture',  title: 'Built for Mobile',    desc: 'Gestures, bottom nav, fully responsive' },
 ];
 
 /* ── APP STATE ───────────────────────────────────────────────── */
@@ -1130,118 +1179,257 @@ function showWelcome() {
   updateMarkDoneBtn();
 }
 
-/** Render the full welcome screen HTML */
+/** Render the full welcome screen HTML — composed from section builders */
 function renderWelcome() {
   const container = document.getElementById('welcome');
   if (!container) return;
 
+  container.innerHTML =
+    renderHomeHero() +
+    renderHomePaths() +
+    renderHomeJourney() +
+    renderHomePractice() +
+    renderHomeInterview() +
+    renderHomeBlogsTeaser() +
+    renderHomeFeatures() +
+    renderHomeFooter();
+}
+
+/* ── HOME §1: Hero — value prop, CTAs, stats band ────────────── */
+function renderHomeHero() {
   const lastVisited = STATE.recentTopics.find(p => STATE.searchIndex.some(t => t.path === p));
   const lastEntry   = lastVisited ? STATE.searchIndex.find(t => t.path === lastVisited) : null;
+  const { total, pct } = calculateStats();
+  const blogCount = (typeof BLOGS !== 'undefined') ? BLOGS.length : 70;
 
-  const { total, completed, pct } = calculateStats();
+  const primaryCta = lastEntry
+    ? `<button class="btn-hero btn-hero-primary" onclick="loadTopic('${escapeAttr(lastEntry.path)}')"
+         aria-label="Continue ${escapeAttr(lastEntry.title)}">
+         ${ICONS.play}<span class="btn-hero-stack"><span class="btn-hero-over">Continue learning</span><span class="btn-hero-main">${escapeHtml(lastEntry.title)}</span></span>${ICONS.arrow}
+       </button>`
+    : `<button class="btn-hero btn-hero-primary" onclick="loadTopic('01-foundations/01-getting-started.md')"
+         aria-label="Start learning Go">
+         ${ICONS.play}<span class="btn-hero-main">Start Learning</span>${ICONS.arrow}
+       </button>`;
 
-  container.innerHTML = `
-
-    <!-- HERO -->
+  return `
     <div class="welcome-hero">
       <div class="welcome-badge">
         <span class="badge-dot"></span>
-        Go 1.22+ · Production Ready
+        Free & Open Source · Go 1.22+
       </div>
       <h1 class="hero-title">Forge Your<br><span class="gradient-text">Go Mastery</span></h1>
       <p class="hero-subtitle">
-        The most comprehensive Go programming platform — from syntax and interfaces
-        to distributed systems and top-company interview prep.
+        One platform for the whole journey — language foundations, concurrency,
+        system design, DSA and top-company interview prep. No paywall, no signup.
       </p>
-      <div class="welcome-stats-grid">
-        <div class="wstat-card">
-          <span class="wstat-num">35+</span>
-          <span class="wstat-label">Topics</span>
-        </div>
-        <div class="wstat-card">
-          <span class="wstat-num">800+</span>
-          <span class="wstat-label">Questions</span>
-        </div>
-        <div class="wstat-card">
-          <span class="wstat-num">6</span>
-          <span class="wstat-label">Difficulty Levels</span>
-        </div>
-        <div class="wstat-card">
-          <span class="wstat-num">${pct}%</span>
-          <span class="wstat-label">Your Progress</span>
-        </div>
+      <div class="hero-cta-row">
+        ${primaryCta}
+        <button class="btn-hero btn-hero-secondary" onclick="loadTopic('coding-practice/foundations/01-variables-types.md')"
+          aria-label="Open coding practice">${ICONS.practice}<span class="btn-hero-main">Practice Coding</span></button>
+        <button class="btn-hero btn-hero-ghost" onclick="loadTopic('__blogs__')"
+          aria-label="Browse industry blogs">Go in Production ${ICONS.arrow}</button>
       </div>
-    </div>
+      <div class="hero-statband" aria-label="Platform stats">
+        <span>${total} lessons</span>
+        <span>800+ questions</span>
+        <span>100 DSA problems</span>
+        <span>${blogCount} industry blogs</span>
+        ${pct > 0 ? `<span class="statband-progress">${pct}% complete</span>` : ''}
+      </div>
+    </div>`;
+}
 
-    ${lastEntry ? `
-    <!-- CONTINUE CARD -->
+/* ── HOME §2: Choose your path — goal-oriented entry points ──── */
+function renderHomePaths() {
+  const cards = HOME_PATHS.map(p => {
+    const count = NAVIGATION
+      .filter(s => p.sections.includes(s.id))
+      .reduce((n, s) => n + s.topics.length, 0);
+    return `<button class="path-card" style="--path-color:${p.color}"
+      onclick="loadTopic('${escapeAttr(p.target)}')" aria-label="${escapeAttr(p.title)}">
+      <span class="path-icon" style="color:${p.color}">${ICONS[p.icon] || ICONS.foundations}</span>
+      <span class="path-title">${escapeHtml(p.title)}</span>
+      <span class="path-desc">${escapeHtml(p.desc)}</span>
+      <span class="path-meta">${count} ${escapeHtml(p.metaNote)}<span class="path-arrow">${ICONS.arrow}</span></span>
+    </button>`;
+  }).join('');
+  return `
     <div class="welcome-section">
-      <div class="welcome-section-title">Continue Learning</div>
-      <div id="continue-card" onclick="loadTopic('${escapeAttr(lastEntry.path)}')">
-        <div class="continue-icon">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polygon points="5 3 19 12 5 21 5 3"/>
-          </svg>
-        </div>
-        <div class="continue-body">
-          <div class="continue-label">Pick up where you left off</div>
-          <div class="continue-title">${escapeHtml(lastEntry.title)}</div>
-          <div class="continue-section" style="display:flex;align-items:center;gap:5px;color:var(--text-muted);font-size:.73rem"><span style="color:${lastEntry.color}">${lastEntry.icon}</span>${escapeHtml(lastEntry.section)}</div>
-        </div>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--accent);flex-shrink:0">
-          <path d="m9 18 6-6-6-6"/>
-        </svg>
-      </div>
-    </div>` : ''}
+      <div class="welcome-section-title">Choose Your Path</div>
+      <div class="home-paths">${cards}</div>
+    </div>`;
+}
 
-    <!-- LEARNING PATH -->
+/* ── HOME §3: Learning journey — vertical roadmap of sections ── */
+function renderHomeJourney() {
+  const sections = NAVIGATION.filter(s => s.id !== 'blogs');
+  const nodes = sections.map((s, i) => {
+    const done = s.topics.filter(t => STATE.progress[t.path]).length;
+    const tot  = s.topics.length;
+    const pct  = tot ? Math.round((done / tot) * 100) : 0;
+    return `<button class="journey-node" style="--node-color:${s.color};--i:${i}"
+      onclick="loadFirstTopic('${escapeAttr(s.id)}')" aria-label="Start ${escapeAttr(s.title)}">
+      <span class="journey-num">${String(i + 1).padStart(2, '0')}</span>
+      <span class="journey-head">
+        <span class="journey-icon" style="color:${s.color}">${ICONS[s.id] || ICONS.foundations}</span>
+        <span class="journey-title">${escapeHtml(s.title)}</span>
+        <span class="journey-count">${done}/${tot}</span>
+      </span>
+      <span class="journey-desc">${escapeHtml(s.desc)}</span>
+      <span class="journey-bar"><span class="journey-bar-fill" style="width:${pct}%"></span></span>
+    </button>`;
+  }).join('');
+  return `
     <div class="welcome-section">
-      <div class="welcome-section-title">Learning Path</div>
-      <div class="learning-path">
-        ${NAVIGATION.map(section => {
-          const done = section.topics.filter(t => STATE.progress[t.path]).length;
-          const tot  = section.topics.length;
-          return `<button class="lp-card" style="--lp-color:${section.color}"
-            onclick="loadFirstTopic('${escapeAttr(section.id)}')"
-            aria-label="Start ${escapeHtml(section.title)}">
-            <div class="lp-card-header">
-              <span class="lp-icon" style="color:${section.color}">${ICONS[section.id] || ICONS.foundations}</span>
-              <span class="lp-title">${escapeHtml(section.title)}</span>
-            </div>
-            <div class="lp-desc">${escapeHtml(section.desc)}</div>
-            <div class="lp-meta">
-              <span class="lp-count">${done}/${tot} done</span>
-              <svg class="lp-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <path d="m9 18 6-6-6-6"/>
-              </svg>
-            </div>
-          </button>`;
-        }).join('')}
-      </div>
-    </div>
+      <div class="welcome-section-title">The Learning Journey</div>
+      <div class="journey">${nodes}</div>
+    </div>`;
+}
 
-    <!-- FEATURED TOPICS -->
+/* ── HOME §4: Practice ladder — six difficulty levels ────────── */
+function renderHomePractice() {
+  const pills = HOME_LEVELS.map((l, i) => `
+    <button class="level-pill" style="--lv:var(--l${i + 1})"
+      onclick="loadTopic('${escapeAttr(l.path)}')" aria-label="Practice ${escapeAttr(l.name)} level">
+      <span class="level-tag">${l.lvl}</span>
+      <span class="level-name">${escapeHtml(l.name)}</span>
+      <span class="level-note">${escapeHtml(l.note)}</span>
+    </button>`).join('');
+  return `
     <div class="welcome-section">
-      <div class="welcome-section-title">Featured Topics</div>
-      <div class="featured-grid">
-        <button class="featured-card" onclick="loadTopic('03-concurrency/02-goroutines.md')" aria-label="Open Goroutines">
-          <span class="featured-card-icon" style="color:#f59e0b">${ICONS.goroutine}</span>
-          <div class="featured-card-title">Goroutines Deep Dive</div>
-          <div class="featured-card-desc">Understand Go's lightweight concurrency model, the runtime scheduler, and goroutine lifecycle.</div>
-        </button>
-        <button class="featured-card" onclick="loadTopic('03-concurrency/03-channels.md')" aria-label="Open Channels">
-          <span class="featured-card-icon" style="color:#00ACD7">${ICONS.channel}</span>
-          <div class="featured-card-title">Channels & Communication</div>
-          <div class="featured-card-desc">Typed conduits for goroutine communication. Buffered vs unbuffered, directional channels.</div>
-        </button>
-        <button class="featured-card" onclick="loadTopic('interview-prep/concurrency-interviews.md')" aria-label="Open Interview Prep">
-          <span class="featured-card-icon" style="color:#f97316">${ICONS.target}</span>
-          <div class="featured-card-title">Concurrency Interviews</div>
-          <div class="featured-card-desc">Real interview questions on goroutines, race conditions, deadlocks, and channel patterns.</div>
-        </button>
+      <div class="welcome-section-title">Practice Ladder</div>
+      <p class="home-section-lede">800+ hands-on questions, every one solved and explained — climb from syntax drills to production debugging.</p>
+      <div class="level-ladder">${pills}</div>
+    </div>`;
+}
+
+/* ── HOME §5: Interview & company prep ───────────────────────── */
+function renderHomeInterview() {
+  const interview = NAVIGATION.find(s => s.id === 'interview');
+  const ctc       = NAVIGATION.find(s => s.id === 'ctc-prep');
+  const companies = (interview?.topics || []).filter(t => t.path.startsWith('interview-prep/company-'));
+  const bands     = (ctc?.topics || []).filter(t => t.path.includes('-lpa'));
+
+  const coChips = companies.map(t => `
+    <button class="co-chip" onclick="loadTopic('${escapeAttr(t.path)}')"
+      aria-label="${escapeAttr(t.title)} interview guide">${escapeHtml(t.title.replace(' Style', ''))}</button>`).join('');
+  const ctcChips = bands.map(t => `
+    <button class="co-chip ctc-chip" onclick="loadTopic('${escapeAttr(t.path)}')"
+      aria-label="${escapeAttr(t.title)}">${escapeHtml(t.title.replace(' Guide', '').replace(' Senior', ''))}</button>`).join('');
+
+  return `
+    <div class="welcome-section">
+      <div class="welcome-section-title">Interview & Company Prep</div>
+      <div class="home-interview">
+        <div class="home-interview-copy">
+          <h3 class="home-interview-title">Prep for the company<br>you actually want</h3>
+          <p class="home-interview-desc">
+            Real interview formats from six top companies, behavioral rounds in STAR
+            format, and salary-band roadmaps that tell you exactly what each tier expects.
+          </p>
+          <button class="btn-hero btn-hero-ghost" onclick="loadTopic('interview-prep/beginner.md')"
+            aria-label="All interview guides">All interview guides ${ICONS.arrow}</button>
+        </div>
+        <div class="home-interview-chips">
+          <div class="chip-group-label">Company-style rounds</div>
+          <div class="chip-row">${coChips}</div>
+          <div class="chip-group-label">CTC-band roadmaps</div>
+          <div class="chip-row">${ctcChips}</div>
+        </div>
       </div>
-    </div>
-  `;
+    </div>`;
+}
+
+/* ── HOME §6: Industry blogs teaser — real data from BLOGS ───── */
+function renderHomeBlogsTeaser() {
+  if (typeof BLOGS === 'undefined' || !BLOGS.length) return '';
+  const picks = [];
+  const seen  = new Set();
+  for (const b of BLOGS) {
+    if (seen.has(b.company)) continue;
+    seen.add(b.company);
+    picks.push(b);
+    if (picks.length === 3) break;
+  }
+  const cards = picks.map(b => {
+    const color = (typeof BLOG_CATEGORY_COLORS !== 'undefined' && BLOG_CATEGORY_COLORS[b.category]) || 'var(--accent)';
+    return `<a class="home-blog-card" href="${escapeAttr(b.url)}" target="_blank" rel="noopener noreferrer"
+      style="--blog-color:${color}" aria-label="Read ${escapeAttr(b.title)} (opens in new tab)">
+      <span class="home-blog-top">
+        <span class="home-blog-mono">${escapeHtml(b.company.slice(0, 2).toUpperCase())}</span>
+        <span class="home-blog-co">${escapeHtml(b.company)}</span>
+        <span class="home-blog-year">${escapeHtml(b.year)}</span>
+      </span>
+      <span class="home-blog-title">${escapeHtml(b.title)}</span>
+      <span class="home-blog-summary">${escapeHtml(b.summary)}</span>
+    </a>`;
+  }).join('');
+  return `
+    <div class="welcome-section">
+      <div class="welcome-section-title">Go in Production</div>
+      <p class="home-section-lede">How real engineering teams run Go at scale — curated posts straight from the source.</p>
+      <div class="home-blogs-grid">${cards}</div>
+      <button class="home-blogs-all" onclick="loadTopic('__blogs__')"
+        aria-label="View all engineering blog posts">View all ${BLOGS.length} engineering posts ${ICONS.arrow}</button>
+    </div>`;
+}
+
+/* ── HOME §7: Feature strip — platform capabilities ──────────── */
+function renderHomeFeatures() {
+  const items = HOME_FEATURES.map(f => {
+    const inner = `
+      <span class="feature-icon">${ICONS[f.icon] || ICONS.target}</span>
+      <span class="feature-text">
+        <span class="feature-title">${escapeHtml(f.title)}</span>
+        <span class="feature-desc">${escapeHtml(f.desc)}</span>
+      </span>`;
+    return f.action
+      ? `<button class="feature-item feature-action" onclick="${f.action}" aria-label="${escapeAttr(f.title)}">${inner}</button>`
+      : `<div class="feature-item">${inner}</div>`;
+  }).join('');
+  return `
+    <div class="welcome-section">
+      <div class="welcome-section-title">Built Like a Product</div>
+      <div class="feature-strip">${items}</div>
+    </div>`;
+}
+
+/* ── HOME §8: Footer — quick links + brand ───────────────────── */
+function renderHomeFooter() {
+  const col = (label, links) => `
+    <div class="home-footer-col">
+      <div class="home-footer-head">${label}</div>
+      ${links.map(([title, fn]) => `<button class="home-footer-link" onclick="${fn}">${escapeHtml(title)}</button>`).join('')}
+    </div>`;
+  return `
+    <div class="home-footer">
+      <div class="home-footer-grid">
+        <div class="home-footer-brand">
+          <div class="home-footer-logo">Go<span>Forge</span></div>
+          <p class="home-footer-tag">${escapeHtml(PLATFORM.tagline)}. Built with plain HTML, CSS &amp; JavaScript — no frameworks, no tracking, works offline.</p>
+        </div>
+        ${col('Learn', [
+          ['Foundations',     `loadFirstTopic('foundations')`],
+          ['Concurrency',     `loadFirstTopic('concurrency')`],
+          ['Advanced Go',     `loadFirstTopic('advanced')`],
+          ['Design Patterns', `loadFirstTopic('patterns')`],
+        ])}
+        ${col('Practice', [
+          ['Coding Practice', `loadFirstTopic('practice')`],
+          ['DSA in Go',       `loadFirstTopic('dsa-go')`],
+          ['System Design',   `loadFirstTopic('system-design')`],
+          ['Search Topics',   `openSearch()`],
+        ])}
+        ${col('Prep', [
+          ['Interview Q&A',   `loadFirstTopic('interview')`],
+          ['CTC Roadmaps',    `loadFirstTopic('ctc-prep')`],
+          ['Industry Blogs',  `loadTopic('__blogs__')`],
+          ['Behavioral (STAR)', `loadTopic('interview-prep/behavioral.md')`],
+        ])}
+      </div>
+      <div class="home-footer-meta">${escapeHtml(PLATFORM.copyright)}</div>
+    </div>`;
 }
 
 /** Load the first topic of a given section ID */
