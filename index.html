@@ -322,7 +322,12 @@
       <input id="search-input" type="text"
         placeholder="Search Go topics, patterns, concepts..."
         autocomplete="off" spellcheck="false" />
-      <kbd id="search-esc" onclick="closeSearch()" title="Close search">ESC</kbd>
+      <button id="search-close" onclick="closeSearch()" aria-label="Close search" title="Close search">
+        <span class="search-close-esc">ESC</span>
+        <svg class="search-close-x" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
     </div>
     <div id="search-results" role="listbox"></div>
     <div id="search-footer">

@@ -224,6 +224,39 @@ const KEYS = {
   theme:     'gf-theme-v1',
 };
 
+/* ── MOBILE BACK-GESTURE MODAL HANDLING ──────────────────────── */
+/* Touch devices have no ESC key. When an overlay opens on mobile we
+   push a history entry, so the phone's back gesture closes the overlay
+   instead of leaving the page. Closing via a button consumes that
+   entry silently. */
+
+let _modalHistoryArmed = false;
+let _suppressNextPop   = false;
+
+function armModalHistory() {
+  if (window.innerWidth > 768 || _modalHistoryArmed) return;
+  history.pushState({ gfModal: true }, '');
+  _modalHistoryArmed = true;
+}
+
+function disarmModalHistory() {
+  if (!_modalHistoryArmed) return;
+  _modalHistoryArmed = false;
+  _suppressNextPop = true;
+  history.back();
+}
+
+/** Close whichever overlay is open. Returns true if something closed. */
+function closeAnyOverlay() {
+  if (STATE.searchOpen) { closeSearch(); return true; }
+  const stats = document.getElementById('stats-modal');
+  if (stats && stats.style.display === 'flex') { closeStatsModal(); return true; }
+  const mobToc = document.getElementById('mob-toc-panel');
+  if (mobToc && mobToc.classList.contains('open')) { closeMobTOC(); return true; }
+  if (STATE.sidebarOpen && window.innerWidth <= 1024) { closeSidebar(); return true; }
+  return false;
+}
+
 /* ── GLOBAL ERROR REPORTER ───────────────────────────────────── */
 /* Any uncaught JS error or promise rejection surfaces as an on-page
    banner with a pre-filled GitHub issue link, so users can report it. */
@@ -487,7 +520,7 @@ function buildSectionEl(section) {
     <span class="nav-section-dot" style="background:${section.color};color:${section.color}"></span>
     <span class="nav-section-icon" style="color:${section.color}">${ICONS[section.id] || ICONS.foundations}</span>
     <span class="nav-section-title">${escapeHtml(section.title)}</span>
-    <span class="nav-section-count">${section.topics.length}</span>
+    <span class="nav-section-count" style="--count-color:${section.color}">${section.topics.length}</span>
     <svg class="nav-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
       <path d="m9 18 6-6-6-6"/>
     </svg>`;
@@ -1170,6 +1203,7 @@ function openSearch() {
   overlay.hidden = false;
   modal.hidden   = false;
   document.body.style.overflow = 'hidden';
+  armModalHistory();
 
   input.value = '';
   setTimeout(() => input.focus(), 40);
@@ -1178,6 +1212,7 @@ function openSearch() {
 
 function closeSearch() {
   STATE.searchOpen = false;
+  disarmModalHistory();
   document.getElementById('search-overlay').hidden = true;
   document.getElementById('search-modal').hidden   = true;
   document.body.style.overflow = '';
@@ -1469,9 +1504,11 @@ function showStats() {
 
   modal.style.display = 'flex';
   document.body.style.overflow = 'hidden';
+  armModalHistory();
 }
 
 function closeStatsModal() {
+  disarmModalHistory();
   const modal = document.getElementById('stats-modal');
   if (modal) modal.style.display = 'none';
   document.body.style.overflow = '';
@@ -1491,10 +1528,12 @@ function openSidebar() {
   document.getElementById('sidebar-overlay').style.display = 'block';
   document.getElementById('menu-toggle').setAttribute('aria-expanded', 'true');
   document.body.style.overflow = 'hidden';
+  armModalHistory();
 }
 
 function closeSidebar() {
   STATE.sidebarOpen = false;
+  disarmModalHistory();
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebar-overlay').style.display = 'none';
   document.getElementById('menu-toggle').setAttribute('aria-expanded', 'false');
@@ -1588,6 +1627,14 @@ function bindEventListeners() {
 
   // Browser back/forward
   window.addEventListener('popstate', e => {
+    // A close-button consumed the modal history entry — ignore this pop
+    if (_suppressNextPop) { _suppressNextPop = false; return; }
+    // Back pressed while an overlay is open — close it, stay on the page
+    if (_modalHistoryArmed) {
+      _modalHistoryArmed = false;
+      closeAnyOverlay();
+      return;
+    }
     const path = e.state?.path || location.hash.slice(1);
     if (path) {
       loadTopic(path, false);
@@ -1664,9 +1711,11 @@ function openMobTOC() {
   panel.classList.add('open');
   if (overlay) overlay.classList.add('open');
   document.body.style.overflow = 'hidden';
+  armModalHistory();
 }
 
 function closeMobTOC() {
+  disarmModalHistory();
   document.getElementById('mob-toc-panel')?.classList.remove('open');
   document.getElementById('mob-toc-overlay')?.classList.remove('open');
   document.body.style.overflow = '';
