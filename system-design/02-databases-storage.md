@@ -2,15 +2,51 @@
 
 ## Why This Matters
 
-Every production Go service eventually hits the same wall: the database becomes the bottleneck. An API that does 50,000 requests/second with in-memory state will do 500 if every request blocks on a poorly-sized connection pool or a missing index. The difference between a Go service that handles 1M users and one that falls over at 50K is almost never the Go code — it is the database design decisions made six months before the load arrived.
+**Why database and storage choices matter.** A database is the part of your system that remembers things after the program stops: user accounts, orders, payments, messages. Your Go code can be rewritten in a week; your data usually cannot be moved without months of careful work. Every production Go service eventually hits the same wall: the database becomes the bottleneck. An API that does 50,000 requests/second with in-memory state will do 500 if every request blocks on a poorly-sized connection pool or a missing index. The difference between a Go service that handles 1M users and one that falls over at 50K is almost never the Go code — it is the database design decisions made six months before the load arrived.
 
-This guide covers how Go teams at companies like Uber, Cloudflare, and Square design persistence layers that scale: which database to pick and why, how to configure PostgreSQL connection pools correctly, how Redis patterns prevent stampedes, how consistent hashing routes queries across shards, and how CQRS keeps read and write models independent as systems grow.
+**What this file covers, in plain words.** This guide walks from beginner concepts to production-grade patterns: how to choose the right database for a given job (and why "just use PostgreSQL" is usually the right starting answer), how to share database connections correctly in Go, how to make slow queries fast with indexes, how to keep money-moving operations safe with transactions, how to use Redis for locks, rate limits, leaderboards, and sessions, how to split data across machines when one machine is no longer enough (sharding), how to keep a full history of every change (event sourcing and CQRS), and how to change a live database schema without downtime (migrations). Every concept comes with working Go code using the standard production libraries: `pgx` for PostgreSQL, `go-redis` for Redis, and `gocql` for Cassandra.
+
+**Where this shows up in industry and interviews.** This is how Go teams at companies like Uber, Cloudflare, and Square design persistence layers that scale: which database to pick and why, how to configure PostgreSQL connection pools correctly, how Redis patterns prevent stampedes, how consistent hashing routes queries across shards, and how CQRS keeps read and write models independent as systems grow. In interviews, database design dominates both system design rounds ("design Instagram" is mostly a storage question) and backend coding rounds (N+1 queries, transaction bugs, and pool exhaustion are favorite probing topics). The file ends with 25 real interview questions ordered from phone-screen to staff level.
+
+If any term in this file is unfamiliar, check the glossary below first — every term is also defined in plain language the first time it appears in context.
+
+### Key Terms in Plain English
+
+| Term | Plain-English Meaning |
+|---|---|
+| Database | Software that stores data permanently and lets you search and update it reliably — a filing cabinet with a very fast librarian. |
+| OLTP (Online Transaction Processing) | The day-to-day business workload: many small, fast reads and writes, such as "create this order" or "fetch this user". |
+| OLAP (Online Analytical Processing) | The reporting workload: few but heavy queries that scan millions of rows, such as "total sales per region last year". |
+| Index | A lookup structure the database keeps beside a table so it can find rows without reading the whole table — like the index at the back of a book. |
+| Transaction | A group of database operations that either all succeed or all fail together; nothing half-done is ever visible. |
+| ACID | The four transaction guarantees: Atomicity (all or nothing), Consistency (data rules are never broken), Isolation (concurrent transactions do not see each other's half-finished work), Durability (committed data survives a crash). |
+| Connection pool | A reusable set of open database connections shared by the whole application, because opening a fresh connection per request is far too slow. |
+| Replication | Keeping live copies of the database on other machines; the original is the primary, the copies are replicas. |
+| Read replica | A replica that answers read queries, taking load off the primary, which continues to handle all writes. |
+| Sharding | Splitting one large dataset across several independent databases (shards), each holding a slice of the data. |
+| Partition | A slice of data; it can live inside one database (table partitioning) or on a separate machine (sharding). |
+| WAL (Write-Ahead Log) | An append-only file where the database records every change before applying it, so it can recover from crashes and feed replicas. |
+| Cache | A small, very fast temporary store (usually in memory, like Redis) placed in front of a slower store to make repeated reads cheap. |
+| TTL (Time To Live) | An expiry timer on a piece of data; when it runs out, the data is deleted automatically. |
+| Consistent hashing | A way of assigning keys to servers so that adding or removing one server moves only a small fraction of the keys. |
+| Distributed lock | A lock shared across many machines so only one instance of a service performs a particular job at a time. |
+| Failover | Automatically promoting a replica to primary when the primary dies, so the system keeps running. |
+| CQRS | Command Query Responsibility Segregation: one model and path for writes (commands), a separate, independently optimized one for reads (queries). |
+| Event sourcing | Storing every change as an immutable event ("order placed", "order shipped") and rebuilding current state by replaying those events. |
+| Projection | A read-optimized view built by processing the event stream — the derived "current state". |
+| Migration | A versioned, scripted change to the database schema (for example "add a phone column"), applied in order and tracked so it runs exactly once. |
+| MVCC (Multi-Version Concurrency Control) | The database keeps old versions of rows so readers never block writers. |
+| Deadlock | Two transactions each waiting forever for a lock the other holds; the database detects this and aborts one of them. |
 
 ---
 
 ## Database Selection Framework
 
 Picking the wrong database early is expensive. The following flowchart and table give Go engineers a systematic way to make the decision once, with justification that survives the architecture review.
+
+Two terms come up immediately. **OLTP (Online Transaction Processing)** is the day-to-day workload of an application: many small, fast reads and writes such as "create this order" or "load this profile". **OLAP (Online Analytical Processing)** is the reporting workload: a few heavy queries that scan millions of rows, such as "revenue per region this quarter". Most databases are good at one or the other, not both — which is why this question appears near the top of the decision tree.
+
+The diagram below is a decision tree for choosing a database. Start at the top with your data's main access pattern and follow the yes/no answers until you land on a recommended database and its Go driver.
 
 ```mermaid
 flowchart TD
@@ -33,6 +69,15 @@ flowchart TD
     P -- No --> R[Re-evaluate requirements]
 ```
 
+How to read this diagram:
+
+- Start at the top box: "What is the primary access pattern?" — meaning, how will your code mostly use this data?
+- Each diamond is a yes/no question about your data. Answer it honestly for your actual workload, not a hypothetical future one.
+- Rectangles at the end of a path are recommendations: a database plus the Go library used to talk to it (for example "PostgreSQL + pgx").
+- The very first question — "structured relational data?" — asks whether your data is naturally tables with relationships (users, orders, items). Most business data is, which is why most paths should end at PostgreSQL.
+- Later branches cover specialized shapes of data: time-ordered events, text search, graphs, flexible documents, very high write volume, and sub-millisecond caching.
+- Reaching "Re-evaluate requirements" means none of the patterns matched cleanly — usually a sign the requirements are not yet understood well enough to pick a database.
+
 | Use Case | Recommended DB | Go Driver / Client | Why Go Teams Choose It |
 |---|---|---|---|
 | OLTP — transactional reads/writes | PostgreSQL | `pgx` / `pgxpool` | ACID guarantees, mature ecosystem, `pgx` is 2–3x faster than `database/sql` drivers due to binary protocol support |
@@ -53,6 +98,8 @@ PostgreSQL is the default choice for Go services that need relational guarantees
 
 ### Connection Pool Design with pgxpool
 
+Start with the vocabulary. A **connection** is an open network session between your Go program and PostgreSQL. Opening one is slow — a TCP handshake, TLS negotiation, and database authentication take 5–50ms, and each open connection costs the database server several megabytes of memory. A **connection pool** solves this by keeping a fixed set of connections open and lending them out: a request borrows a connection, runs its query, and returns it for the next request to reuse. Analogy: instead of hiring and firing a courier for every single package, you keep a small team of couriers on standby. `pgxpool` is the pooling layer that ships with `pgx`, the standard high-performance PostgreSQL driver for Go.
+
 The connection pool is the most important tuning surface in a Go service. Get it wrong and you either exhaust the database's `max_connections` (every new app instance starves existing ones) or leave throughput on the floor with a pool too small to saturate the available CPU.
 
 **Pool sizing formula:**
@@ -62,7 +109,9 @@ max_connections_per_instance = (total_db_max_connections - reserved_connections)
 min_connections = max(2, max_connections_per_instance / 4)
 ```
 
-PostgreSQL defaults to `max_connections = 100`. Reserve 3–5 for superuser and monitoring. If you run 4 app instances, each gets at most `(100 - 5) / 4 = 23` connections.
+PostgreSQL defaults to `max_connections = 100`. Reserve 3–5 for superuser and monitoring. If you run 4 app instances, each gets at most `(100 - 5) / 4 = 23` connections. In plain terms: the database can only seat 100 guests, so each copy of your service must agree in advance on how many seats it may occupy — otherwise one service starves the others.
+
+The code below builds a production-ready pool. Each setting maps to a real failure mode described in its comment.
 
 ```go
 package database
@@ -162,6 +211,8 @@ func Stats(pool *pgxpool.Pool) PoolStats {
 
 #### Reading EXPLAIN ANALYZE Output
 
+When a query is slow, the first step is never "add an index" — it is to ask PostgreSQL to show its work. `EXPLAIN ANALYZE` runs the query and prints the **query plan**: the exact step-by-step strategy the database used (which tables it scanned, which indexes it used, how long each step took). Reading this output is how you find out why a query is slow instead of guessing.
+
 Before indexing, run `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)` on slow queries. The key numbers:
 
 | Field | What It Means | Red Flag |
@@ -173,6 +224,8 @@ Before indexing, run `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)` on slow queries. 
 | `Execution Time` | Total wall time | Baseline for before/after index comparison |
 
 #### Index Types — When to Use Each
+
+An **index** is a sorted lookup structure the database maintains next to a table, like the index at the back of a textbook: instead of reading all 800 pages (a "sequential scan"), the database jumps straight to the right rows. The trade-off: every index must be updated on every write, so indexes make reads faster and writes slower. PostgreSQL offers several index types, each built for a different shape of question:
 
 | Index Type | Use Case | Go ORM / pgx Example |
 |---|---|---|
@@ -220,7 +273,7 @@ func GetActiveOrdersByUser(ctx context.Context, pool *pgxpool.Pool, userID int64
 
 #### Solving the N+1 Problem in Go
 
-The N+1 problem: you load N records, then issue one query per record to load a related resource. 100 orders → 101 queries. This is the most common performance bug in Go services that use thin database/sql wrappers.
+The N+1 problem: you load N records, then issue one query per record to load a related resource. 100 orders → 101 queries. Analogy: instead of asking the warehouse for all 100 parcels in one trip, you drive there 100 separate times. Each round trip to the database costs network latency (often 1ms or more), so 101 queries can take 100x longer than the 1 or 2 queries that fetch the same data. This is the most common performance bug in Go services that use thin database/sql wrappers.
 
 ```go
 // BAD: N+1 — one query per order to get its items.
@@ -359,6 +412,8 @@ func GetOrdersWithItemsTwoQuery(ctx context.Context, pool *pgxpool.Pool, userID 
 ```
 
 ### Transactions in Go
+
+A **transaction** groups several SQL statements so they either all succeed or all fail together — the classic example is a money transfer, where the debit and the credit must never be separated. Three more terms appear in the code below. An **isolation level** controls how much one in-flight transaction can see of another's work; stricter levels prevent more anomalies but allow less concurrency. A **savepoint** is a bookmark inside a transaction: you can roll back to the bookmark without abandoning everything done before it. And there are two strategies for handling concurrent writers: **pessimistic locking** locks rows up front (`SELECT ... FOR UPDATE`) so nobody else can touch them, while **optimistic locking** assumes conflicts are rare, writes with a version check, and retries if someone else got there first.
 
 Transactions in Go require explicit rollback on error paths. The standard idiom using `defer` ensures rollback is always called, even on panics.
 
@@ -539,7 +594,9 @@ func RetryOnConflict(maxAttempts int, fn func() error) error {
 
 ## Redis Deep Dive
 
-Redis is not a cache that happens to support multiple data structures. It is a data structure server that happens to be fast enough to use as a cache. Treating it as "just memcached" leaves most of its capabilities on the table.
+If you have never used Redis: it is an **in-memory** database, meaning all data lives in RAM rather than on disk. That is why reads return in under a millisecond — RAM is thousands of times faster than disk — and also why Redis is typically used for data you can afford to lose or rebuild: caches, sessions, counters, queues. A **cache** is a fast temporary store placed in front of a slower one so repeated reads are cheap, and a **TTL (Time To Live)** is an expiry timer Redis attaches to keys so stale data deletes itself.
+
+Redis is not a cache that happens to support multiple data structures. It is a data structure server that happens to be fast enough to use as a cache. Treating it as "just memcached" leaves most of its capabilities on the table. The table below lists each built-in structure with its complexity — the O(...) notation describes how cost grows with data size (O(1) means constant time regardless of size, O(log N) grows slowly, O(N) grows linearly).
 
 ### Data Structures, Use Cases, and Complexity
 
@@ -558,7 +615,7 @@ Redis is not a cache that happens to support multiple data structures. It is a d
 
 #### Pattern 1: Distributed Lock (Redlock Implementation)
 
-A distributed lock prevents multiple instances of a Go service from executing the same critical section concurrently — e.g., running a scheduled job exactly once.
+A **distributed lock** prevents multiple instances of a Go service from executing the same critical section concurrently — e.g., running a scheduled job exactly once. A normal Go mutex only works inside one process; when your service runs as five copies on five machines, they need a lock that all five can see, and Redis (one fast store they all share) is the usual place to put it. Analogy: a single shared key hook outside a room — whoever grabs the key enters, everyone else waits or leaves.
 
 ```go
 package redislock
@@ -661,7 +718,7 @@ func RunOnce(ctx context.Context, client *redis.Client, jobName string, fn func(
 
 #### Pattern 2: Rate Limiter with Sliding Window
 
-A sliding window counter is more accurate than a fixed window (no burst at window boundaries) and cheaper than a full token bucket.
+**Rate limiting** means capping how many requests a client may make within a time window (for example, 100 requests per minute) to protect your service from abuse and overload. A "fixed window" resets the count at the top of each minute, which lets a client burst 200 requests in two seconds around the boundary; a "sliding window" counts requests in the rolling last 60 seconds, closing that loophole. A sliding window counter is more accurate than a fixed window (no burst at window boundaries) and cheaper than a full token bucket.
 
 ```go
 package ratelimit
@@ -764,6 +821,8 @@ func (l *SlidingWindowLimiter) AllowN(ctx context.Context, key string, n int) (b
 
 #### Pattern 3: Leaderboard with Sorted Set
 
+A Redis **sorted set** keeps every member paired with a numeric score and always in score order — exactly the shape of a game leaderboard. Asking "who are the top 10?" or "what is player X's rank?" is a single O(log N) command, where the same questions in SQL would require sorting the whole table on every read.
+
 ```go
 package leaderboard
 
@@ -856,6 +915,8 @@ func AroundPlayer(ctx context.Context, client *redis.Client, playerID string, n 
 
 #### Pattern 4: Session Store
 
+A **session** is the server-side record of a logged-in user — who they are, what roles they have. The browser holds only a random session ID (in a cookie); on every request the server looks the ID up to identify the user. Redis fits perfectly because sessions need fast lookup on every single request and should expire automatically when idle (TTL).
+
 ```go
 package session
 
@@ -932,6 +993,8 @@ func (s *Store) Delete(ctx context.Context, sessionID string) error {
 
 #### Pattern 5: Pub/Sub for Real-Time Events
 
+**Pub/Sub** (publish/subscribe) is a broadcast mechanism: publishers send messages to a named channel, and every subscriber currently listening on that channel receives them instantly. It is like a radio station — anyone tuned in hears the broadcast, but messages are not stored, so a subscriber that was offline misses them (use Redis Streams or Kafka when delivery must be guaranteed).
+
 ```go
 package pubsub
 
@@ -994,17 +1057,30 @@ func Subscribe(ctx context.Context, client *redis.Client, handler func(Event), c
 
 ### Redis Cluster vs Sentinel vs Single
 
+Redis can be deployed three ways, and the choice comes down to two questions. First: do you need **automatic failover** — meaning if the Redis machine dies, should another take over by itself (this is called **high availability**, or HA)? Second: do you need more memory or write throughput than one machine can provide? **Sentinel** is a set of small watchdog processes that monitor a single Redis primary and promote a replica if it fails. **Redis Cluster** goes further and also splits (shards) the data itself across multiple primaries.
+
+The diagram below is a decision tree: answer the two failover and scaling questions and it tells you which deployment model to run and which go-redis client constructor to use.
+
 ```mermaid
 flowchart TD
     A[Redis deployment model?] --> B{Do you need automatic failover?}
-    B -- No / dev only --> C[Single instance\nSimple, zero overhead\nNo HA]
+    B -- No / dev only --> C[Single instance<br/>Simple, zero overhead<br/>No HA]
     B -- Yes --> D{Do you need horizontal write scaling?}
-    D -- No / < 100GB data --> E[Redis Sentinel\n3+ sentinels monitor 1 primary\nAutomatic failover in ~30s\nReads can go to replicas]
-    D -- Yes / > 100GB data --> F[Redis Cluster\n3–6+ primary shards\nAutomatic sharding by hash slot\ngo-redis ClusterClient handles routing\nRequires CLUSTER-aware commands]
+    D -- No / < 100GB data --> E[Redis Sentinel<br/>3+ sentinels monitor 1 primary<br/>Automatic failover in ~30s<br/>Reads can go to replicas]
+    D -- Yes / > 100GB data --> F[Redis Cluster<br/>3–6+ primary shards<br/>Automatic sharding by hash slot<br/>go-redis ClusterClient handles routing<br/>Requires CLUSTER-aware commands]
     E --> G{go-redis config?}
-    G --> H[redis.FailoverClient\nwith sentinel addresses]
-    F --> I[redis.NewClusterClient\nwith seed node addresses]
+    G --> H[redis.FailoverClient<br/>with sentinel addresses]
+    F --> I[redis.NewClusterClient<br/>with seed node addresses]
 ```
+
+How to read this diagram:
+
+- Start at the top: you are choosing how to deploy Redis for your service.
+- The first diamond asks whether you need automatic failover. Answering "no" (acceptable only for development or truly disposable data) ends at a single instance — simplest possible setup, but if it dies, everything in it is gone until someone intervenes manually.
+- Answering "yes" leads to the second diamond: do you need to scale writes or memory beyond one machine?
+- If one machine's RAM is enough (roughly under 100GB), Sentinel is the answer: one primary does all the work while sentinel processes watch it and promote a replica automatically within about 30 seconds of a failure.
+- If you need more than one machine's capacity, Redis Cluster splits the keyspace across 3 or more primaries; the go-redis ClusterClient automatically sends each command to the shard that owns the key.
+- The bottom boxes show the matching Go constructor: `redis.NewFailoverClient` for Sentinel, `redis.NewClusterClient` for Cluster.
 
 | Feature | Single | Sentinel | Cluster |
 |---|---|---|---|
@@ -1020,11 +1096,13 @@ flowchart TD
 
 ## Database Sharding in Go
 
-Sharding distributes data across multiple database instances (shards) to scale beyond what a single machine can handle. The application layer is responsible for routing each query to the correct shard.
+**Sharding** distributes data across multiple database instances (shards) to scale beyond what a single machine can handle. Analogy: one library cannot hold every book in the country, so you build ten libraries and agree on a rule for which book lives where (for example, by the first letter of the author's name). The hard part is the rule — called the **shard key** — because every query must know which library to visit, and a bad rule sends 90% of visitors to the same building. The application layer is responsible for routing each query to the correct shard.
 
 ### Consistent Hashing Implementation
 
-Consistent hashing minimizes key remapping when shards are added or removed. It places shards on a virtual ring and maps keys to the nearest clockwise shard. Virtual nodes (vnodes) improve distribution evenness.
+The naive routing rule, `shard = hash(key) % number_of_shards`, has a fatal flaw: when you add an 11th shard, the modulus changes and almost every key suddenly maps to a different shard, forcing a near-total data reshuffle. **Consistent hashing** fixes this. Picture a clock face: each shard is placed at several positions around the ring, each key hashes to a point on the ring, and the key belongs to the first shard found moving clockwise. Adding a shard only takes over the small arc of keys just before its new positions — everything else stays put.
+
+Consistent hashing minimizes key remapping when shards are added or removed. It places shards on a virtual ring and maps keys to the nearest clockwise shard. **Virtual nodes (vnodes)** — placing each physical shard at 100–200 points on the ring instead of one — improve distribution evenness, so no single shard ends up owning a disproportionately large arc.
 
 ```go
 package sharding
@@ -1154,6 +1232,8 @@ func (r *Ring) GetN(key string, n int) []string {
 
 ### Application-Level Sharding with pgxpool
 
+The ring above decides *which* shard owns a key; this section wires that decision into real PostgreSQL access. Each shard gets its own `pgxpool.Pool`, and a thin router picks the right pool per query. Note the `FanOut` helper at the end — when a query cannot be routed to one shard (for example, an admin report across all users), the application must ask every shard and merge the results itself.
+
 ```go
 package sharding
 
@@ -1247,7 +1327,16 @@ func FanOut[T any](ctx context.Context, sp *ShardedPool, query string, scan func
 
 ### What It Is and When Go Teams Use It
 
-**Event sourcing** stores the history of state changes (events) as the system of record, not the current state. The current state is always derived by replaying events. **CQRS** (Command Query Responsibility Segregation) separates the write path (commands → events) from the read path (projections → query models).
+**Event sourcing** stores the history of state changes (events) as the system of record, not the current state. The current state is always derived by replaying events. Analogy: a bank account. The bank does not store just your balance — it stores every deposit and withdrawal ever made, and your balance is computed from that history. If a dispute arises, the full history is there. **CQRS** (Command Query Responsibility Segregation) separates the write path (commands → events) from the read path (projections → query models).
+
+A few terms used throughout this section, in plain language:
+
+- **Command**: a request to change something ("place this order"). It can be rejected by validation.
+- **Event**: an immutable fact recording that something already happened ("order placed at 14:02"). Events are never rejected or edited after the fact.
+- **Aggregate**: one entity whose events belong together — for example a single order. All its events share an `aggregate_id`.
+- **Event store**: the append-only table (or database) where events are written, in order, and never updated or deleted.
+- **Projection**: a read-optimized view built by a background worker that processes events one by one — the derived "current state" your queries actually read.
+- **Query**: a request to read data. Queries hit the projections, never the event store directly.
 
 Go teams adopt this pattern when:
 - Audit trails are mandatory (fintech, healthcare, legal)
@@ -1255,15 +1344,17 @@ Go teams adopt this pattern when:
 - Event replay is valuable for debugging or backfilling new analytics
 - The write load and read load have fundamentally different scaling needs
 
+The diagram below shows the full CQRS plus event sourcing flow from left to right: a write request becomes an event, a background worker turns events into read models, and read requests are served entirely from those read models.
+
 ```mermaid
 flowchart LR
-    subgraph Write Side
+    subgraph WS["Write Side"]
         A[HTTP Command] --> B[Command Handler]
         B --> C{Validate}
         C -- Valid --> D[Append to Event Store]
         C -- Invalid --> E[Return Error]
     end
-    subgraph Event Store
+    subgraph ES["Event Store"]
         D --> F[(events table)]
     end
     subgraph Projections
@@ -1272,14 +1363,25 @@ flowchart LR
         G --> I[(Search Index - ES)]
         G --> J[(Cache - Redis)]
     end
-    subgraph Read Side
+    subgraph RS["Read Side"]
         K[HTTP Query] --> L[Query Handler]
         L --> H
         L --> I
     end
 ```
 
+How to read this diagram:
+
+- Begin at the top left in the "Write Side" box: an HTTP request carrying a command (such as "place order") arrives at the Command Handler.
+- The handler validates the command. Invalid commands are rejected immediately with an error; valid ones become an event appended to the event store.
+- The "Event Store" box in the middle is the system of record: an append-only events table. Nothing here is ever updated or deleted.
+- In the "Projections" box, a Projection Worker continuously reads new events and updates one or more read stores: a PostgreSQL read database for queries, a search index (Elasticsearch) for text search, and a Redis cache for hot lookups.
+- The "Read Side" box at the bottom handles HTTP queries (such as "show my orders"). The Query Handler reads only from the projections — never from the event store.
+- Key insight: the write path and read path never touch the same tables, so each can be scaled, indexed, and reshaped independently. The cost is a small delay (usually milliseconds to seconds) before a write becomes visible on the read side — this is called eventual consistency.
+
 ### Full Go Implementation
+
+The code below implements every box from the diagram in order: the event types, the event store (with optimistic version checking so two writers cannot append conflicting events to the same aggregate), a command handler, and the projection worker that builds the read model.
 
 ```go
 package eventsourcing
@@ -1550,6 +1652,8 @@ func applyEvent(ctx context.Context, pool *pgxpool.Pool, e Event) error {
 
 ## Database Migration Strategy
 
+A **migration** is a versioned, scripted change to the database schema — "add a phone column", "create the orders table". Instead of someone typing `ALTER TABLE` by hand in production (and forgetting what they typed), each change lives in the repository as a numbered SQL file, is reviewed like code, and is applied exactly once in order. Each migration comes in a pair: an "up" file that applies the change and a "down" file that reverses it.
+
 ### golang-migrate Full Example
 
 golang-migrate is the standard migration tool for Go services. Migrations live in the repo as versioned SQL files and are applied at deploy time by the application itself or a migration init container.
@@ -1653,7 +1757,9 @@ DROP TABLE orders;
 
 ### Zero-Downtime Migration Patterns
 
-Running `ALTER TABLE` directly on a live table with millions of rows will lock the table for seconds to minutes, causing downtime. The safe pattern is to decouple schema changes from code changes across three deployments.
+Running `ALTER TABLE` directly on a live table with millions of rows will lock the table for seconds to minutes, causing downtime. The safe pattern is to decouple schema changes from code changes across three deployments. This is often called the **expand-contract pattern**: first expand the schema (add the new column alongside the old), let old and new code coexist, then contract (remove the old column) only after nothing uses it. A **backfill** means filling in the new column for all the rows that existed before the change, done in small batches so the table is never locked for long.
+
+The sequence diagram below shows the four phases of safely adding a required `phone` column to a live `users` table, across three application versions. Time flows from top to bottom; each arrow is an action against the database.
 
 ```mermaid
 sequenceDiagram
@@ -1676,6 +1782,15 @@ sequenceDiagram
     App v3->>DB: ALTER TABLE users ALTER COLUMN phone SET NOT NULL;
     Note over App v3: App v3 requires phone column — safe now
 ```
+
+How to read this diagram:
+
+- The columns (participants) are the database and three successive versions of the application; time flows downward.
+- Phase 1: add the column as nullable with no default. In PostgreSQL this is instant — no rows are rewritten, so no downtime.
+- Phase 2: deploy App v2, which writes the phone number to the new column on every save but still tolerates rows where it is missing. Old and new rows now coexist safely.
+- Phase 3: a backfill job fills in the column for all pre-existing rows in small batches (note on the right: small batches avoid holding a long lock).
+- Phase 4: only after every row has a value, add the NOT NULL constraint and deploy App v3, which can now rely on the column always being present.
+- The rule underneath it all: at every moment during a rolling deployment, both the old and new code versions must work against the current schema.
 
 Go batch backfill implementation:
 
@@ -1738,6 +1853,8 @@ func BackfillColumn(ctx context.Context, pool *pgxpool.Pool) error {
 ---
 
 ## Interview Questions: Database Design for Go Developers
+
+These 25 questions progress from phone-screen basics to staff-level design discussions. Each answer is written the way a strong candidate would actually deliver it. If a term in an answer is unfamiliar, it is defined earlier in this file or in the glossary at the top.
 
 ### Foundational — Cleared in Phone Screens
 

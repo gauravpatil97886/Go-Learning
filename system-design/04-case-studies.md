@@ -4,6 +4,39 @@ Every case study follows the complete 5-step interview framework used at Google,
 
 ---
 
+## Why Case Studies Are the Best Way to Learn System Design
+
+**Why:** Reading definitions of "load balancer" or "message queue" in isolation rarely sticks. System design knowledge becomes real when you watch a complete system get built end to end: a vague business requirement turns into capacity numbers, the numbers force architecture decisions, and the architecture exposes failure modes you then have to fix. Case studies compress years of production experience into a few hours of reading, because each one shows not just *what* the final design looks like, but *why* every box in the diagram exists.
+
+**What:** This file contains five complete, interview-grade system designs — a URL shortener, a rate limiter, a notification service, a distributed cache, and a distributed task scheduler. Each one walks the full path: requirements, back-of-envelope math, a high-level architecture diagram, deep dives with real Go code, and an honest analysis of what breaks at scale. Nothing is hand-waved: you get SQL schemas, Redis Lua scripts, Kafka partition counts, and runnable Go implementations.
+
+**Industry context:** These five problems are the most frequently asked system design questions at Google, Meta, Amazon, Uber, Stripe, and virtually every backend-heavy startup. They are popular precisely because each one tests several fundamentals at once — caching, sharding, queues, consistency, fault tolerance — in a single 45-minute conversation. If you can confidently design these five systems, you can recombine their building blocks to handle almost any system design question, because most real-world systems (feeds, payments, chat, search) are made from the same parts.
+
+### How to Read This File for Maximum Benefit
+
+1. **Read the requirements section first, then stop.** Cover the rest of the case study and ask yourself: "How would I design this?" Sketch your own boxes and arrows on paper.
+2. **Attempt your own capacity math.** Even rough numbers (requests per second, storage per year) change which design is correct.
+3. **Only then read the provided design and compare.** The gaps between your design and this one are exactly what you need to study.
+4. **Trace every diagram with your finger.** Each diagram in this file comes with a step-by-step reading guide that follows one real request through the system. Do not skip these — being able to narrate a request's journey out loud is precisely what interviewers grade you on.
+5. **Type out the Go code.** Reading code teaches recognition; typing it teaches recall.
+
+### A Few Terms Before You Start (Beginner Glossary)
+
+- **RPS (requests per second):** how many requests hit the system every second. The single most important scaling number.
+- **p99 latency:** the response time that 99% of requests beat. "p99 under 100ms" means only the slowest 1% of requests take longer than 100ms.
+- **Cache:** a small, very fast store (usually in memory, like Redis) that keeps copies of frequently read data so you do not hit the slower database every time.
+- **Load balancer:** a traffic cop that spreads incoming requests across many identical servers so no single server is overwhelmed.
+- **Read replica:** a read-only copy of the database. Writes go to one primary; reads can be spread across many replicas.
+- **Message queue (Kafka):** a durable buffer between services. A producer drops a message in; a consumer picks it up later, at its own pace. This decouples fast work from slow work.
+- **TTL (time to live):** an expiry timer on cached data; after the TTL, the entry is deleted automatically.
+- **Idempotent:** an operation that is safe to run twice with the same effect as running it once. Critical whenever retries exist.
+
+### How These Map to Real Interviews
+
+A typical 45-minute system design interview follows the same 5 steps used in every case study below. Interviewers expect you to drive the conversation through them in order, spending roughly 5 minutes on requirements, 5 on estimation, 15 on high-level design, 15 on deep dives, and 5 on bottlenecks. The "Interviewer Follow-up Questions" at the end of each case study are real follow-ups — practice answering them out loud.
+
+---
+
 ## How to Use This File
 
 The framework used in every case study below:
@@ -21,6 +54,10 @@ The framework used in every case study below:
 ### Why This Problem Appears in Interviews
 
 A URL shortener is a canonical system design problem because it touches: ID generation at scale, read-heavy caching, database indexing, CDN usage, and analytics pipelines — all in a single system.
+
+### The Problem in Plain Words
+
+You paste a long, ugly link like `https://example.com/products/2026/summer-sale?ref=email&id=8842` into a website, and it gives you back a tiny one like `https://short.ly/aZ3kB91`. When anyone clicks the tiny link, the service looks up the original long URL and instantly forwards (redirects) the browser to it. That is the entire product. The challenge is doing this lookup billions of times per day, in under 100 milliseconds, without ever losing a mapping. Creating short links is rare; clicking them is constant — so this is an extremely **read-heavy** system, and that single fact drives almost every design decision below.
 
 ---
 
@@ -97,16 +134,29 @@ Write: 6 req/sec × 500 bytes = negligible
 
 ### Step 3: High-Level Design
 
+#### How We Get to This Design (Step by Step)
+
+Do not memorize the final diagram — build it. Here is how each component earns its place:
+
+1. **Start with one server and one database table.** A single Go server with a `urls` table (`short_code → long_url`) handles the whole product. This works perfectly at small scale.
+2. **The math kills the single server.** Step 2 showed ~350,000 redirects/sec at peak. One database cannot serve 350K `SELECT`s per second. But 99% of those lookups are for the same popular URLs — a textbook caching opportunity. **Add Redis** in front of the database so most lookups never touch PostgreSQL.
+3. **One Go server is still a bottleneck and a single point of failure.** The service holds no state (every request is independent), so we run 10 identical replicas and put a **load balancer** in front to spread traffic.
+4. **The database is read-heavy too.** Even at a 99% cache hit rate, 1% of 350K/sec is 3,500 queries/sec. **Add read replicas** so redirects read from copies while the rare writes go to the primary.
+5. **The hottest URLs do not even need to reach us.** A viral link gets millions of identical clicks. A **CDN** can cache the redirect response at edge servers around the world and answer in under 5ms.
+6. **Counting clicks must not slow down redirects.** Writing analytics to the database on every click would melt it. Instead the service drops a tiny event into **Kafka** and responds immediately; a separate **Analytics Service** consumes the events later and writes hourly aggregates.
+
+The diagram below shows the finished system with all six of those decisions in place. Solid arrows show the direction requests and data flow.
+
 ```mermaid
 graph TD
     Client["Client Browser / App"]
-    LB["Load Balancer\n(L7, e.g. NGINX / ALB)"]
-    URLService["URL Service\n(Go, stateless, 10 replicas)"]
-    Cache["Redis Cluster\n(read cache, TTL 24h)"]
-    DB["PostgreSQL\n(primary + read replicas)"]
-    Analytics["Analytics Service\n(async, Kafka consumer)"]
-    Kafka["Kafka\n(click events)"]
-    CDN["CDN\n(popular URLs)"]
+    LB["Load Balancer<br/>(L7, e.g. NGINX / ALB)"]
+    URLService["URL Service<br/>(Go, stateless, 10 replicas)"]
+    Cache["Redis Cluster<br/>(read cache, TTL 24h)"]
+    DB["PostgreSQL<br/>(primary + read replicas)"]
+    Analytics["Analytics Service<br/>(async, Kafka consumer)"]
+    Kafka["Kafka<br/>(click events)"]
+    CDN["CDN<br/>(popular URLs)"]
 
     Client -->|"POST /shorten"| LB
     Client -->|"GET /:code"| CDN
@@ -119,6 +169,16 @@ graph TD
     Kafka --> Analytics
     Analytics -->|"write aggregates"| DB
 ```
+
+**How to read this diagram:**
+
+1. A user clicks a short link (`GET /:code`). The request first hits the CDN; if the CDN already has the redirect cached, the user is forwarded immediately and nothing else in the diagram is touched.
+2. On a CDN miss, the request goes to the Load Balancer, which picks one of the 10 stateless URL Service replicas.
+3. The URL Service asks Redis for the long URL. About 99% of the time Redis has it (cache hit) and the user is redirected in a few milliseconds.
+4. On a Redis miss, the service queries a PostgreSQL read replica, stores the result back into Redis with a 24-hour TTL, then redirects the user.
+5. In parallel (asynchronously, so the user never waits), the service publishes a "click" event to Kafka.
+6. The Analytics Service consumes Kafka events at its own pace and writes hourly aggregate counts back to PostgreSQL.
+7. The rare write path — someone creating a new short URL (`POST /shorten`) — skips the CDN, goes through the Load Balancer to the URL Service, and inserts directly into the PostgreSQL primary.
 
 **Component Responsibilities:**
 
@@ -534,6 +594,10 @@ Use a distributed lock (Redis `SET url:lock:{code} 1 NX EX 5`). Only one gorouti
 
 A rate limiter is an infrastructure primitive found in every API gateway, microservice mesh, and payment processor. It tests your understanding of distributed consistency, atomic operations, and algorithm trade-offs.
 
+### The Problem in Plain Words
+
+Imagine your API is a club with a bouncer. Without one, a single misbehaving user (or a bot, or a buggy script stuck in a loop) can flood you with thousands of requests per second and slow everyone else down — or run up a huge cloud bill. A rate limiter is that bouncer: it counts how many requests each user has made recently and, once they exceed their allowance (say, 100 requests per minute), it politely turns away further requests with an HTTP `429 Too Many Requests` response telling them when to come back. The two hard parts are: (1) the counting must add almost zero delay (under 1 millisecond) to every single request, and (2) when your API runs on many servers at once, they all need to agree on the count — a user should not get 10x the limit just because there are 10 servers.
+
 ---
 
 ### Requirements and Scale
@@ -801,19 +865,29 @@ func (d *DistributedRateLimiter) Middleware(next http.Handler) http.Handler {
 
 ### Architecture: Rate Limiter in Microservices
 
+#### How We Get to This Design (Step by Step)
+
+1. **Start with the in-process `TokenBucket` above inside a single Go server.** A mutex-protected map of buckets works perfectly — until you run more than one server.
+2. **Multiple servers break the count.** With 10 gateway pods each keeping its own local buckets, a user limited to 100 req/min can actually make 1000 req/min by spreading requests across pods. The counts must live in **one shared place: Redis**.
+3. **Shared state creates a race condition.** "Read the token count, then write it back" as two separate Redis commands lets two pods both see 1 token and both allow a request. The fix is the **Lua script**: Redis runs the entire read-refill-consume sequence atomically, so no other command can interleave.
+4. **Limits must be changeable without redeploying.** Hardcoded limits mean a 3 a.m. incident requires a code release. So rules (capacity, refill rate, key patterns) live in a **Rule Store** (PostgreSQL, cached in Redis) that an **Admin API** can update at runtime.
+5. **The limiter must not become the outage.** If Redis goes down, we "fail open" — let traffic through and alert — because rejecting all traffic over a broken counter is worse than briefly not counting.
+
+The diagram below shows the result: the rate limiter lives as middleware inside the API gateway, with Redis as the shared, atomic counter store.
+
 ```mermaid
 graph TD
     Client["API Client"]
-    Gateway["API Gateway\n(Go, 5 replicas)"]
-    RLMiddleware["Rate Limiter Middleware\n(embedded in Gateway)"]
-    Redis["Redis Cluster\n(6 shards, token buckets)"]
-    RuleStore["Rule Store\n(PostgreSQL + Redis cache)"]
-    ServiceA["Service A\n(Go)"]
-    ServiceB["Service B\n(Go)"]
-    ServiceC["Service C\n(Go)"]
-    AdminAPI["Admin API\n(update rules at runtime)"]
+    Gateway["API Gateway<br/>(Go, 5 replicas)"]
+    RLMiddleware["Rate Limiter Middleware<br/>(embedded in Gateway)"]
+    Redis["Redis Cluster<br/>(6 shards, token buckets)"]
+    RuleStore["Rule Store<br/>(PostgreSQL + Redis cache)"]
+    ServiceA["Service A<br/>(Go)"]
+    ServiceB["Service B<br/>(Go)"]
+    ServiceC["Service C<br/>(Go)"]
+    AdminAPI["Admin API<br/>(update rules at runtime)"]
 
-    Client -->|"HTTP request\n+ X-User-ID header"| Gateway
+    Client -->|"HTTP request<br/>+ X-User-ID header"| Gateway
     Gateway --> RLMiddleware
     RLMiddleware -->|"EVALSHA lua script"| Redis
     RLMiddleware -->|"load rules"| RuleStore
@@ -824,6 +898,16 @@ graph TD
     RLMiddleware -->|"allowed"| ServiceC
     RLMiddleware -->|"HTTP 429"| Client
 ```
+
+**How to read this diagram:**
+
+1. A client sends an API request (with its user ID in a header) to the API Gateway, just like any normal request.
+2. Before the request reaches any backend service, it passes through the Rate Limiter Middleware embedded in the gateway.
+3. The middleware looks up which rule applies to this user and endpoint (rules come from the Rule Store, cached in Redis with a 30-second TTL).
+4. The middleware fires one atomic Lua script call to Redis, which refills the user's token bucket based on elapsed time and tries to consume one token — all in a single uninterruptible operation.
+5. If a token was available, the request is forwarded to the target backend service (A, B, or C), with `X-RateLimit-Remaining` headers attached.
+6. If the bucket was empty, the gateway immediately returns HTTP 429 with a `Retry-After` header — the backend services never see the request.
+7. Separately, an operator can change limits through the Admin API at any time; the Rule Store invalidates the cached rules in Redis so the new limits apply within seconds, with no restart.
 
 **Rule Store structure:**
 
@@ -894,6 +978,10 @@ The Lua script uses the timestamp passed as an argument (ARGV[4]), not Redis's o
 
 A notification service spans multiple systems (push, SMS, email), requires priority queuing, retry logic, template rendering, and delivery guarantees — exactly the properties that expose system design skill.
 
+### The Problem in Plain Words
+
+Every app you use sends you messages: a push notification when your order ships, an SMS with a login code (OTP), an email with a receipt. Behind the scenes, one central "notification service" usually handles all of it for the whole company. Other teams call it with "send user 42 the order-shipped message" and it figures out the rest: which channel to use, whether the user opted out, what the message text should say, and how to actually deliver it through outside providers like Apple/Google (push), Twilio (SMS), or SendGrid (email). The hard parts: some messages are urgent (an OTP is useless after 5 minutes) while others can wait (a promotion), the outside providers each cap how fast you may send, and providers fail randomly — so you need priorities, per-provider speed limits, and automatic retries that never let a critical message silently disappear.
+
 ---
 
 ### Requirements
@@ -916,21 +1004,32 @@ A notification service spans multiple systems (push, SMS, email), requires prior
 
 ### Architecture
 
+#### How We Get to This Design (Step by Step)
+
+1. **Start naive: an API that calls Twilio/SendGrid directly.** A single Go endpoint that synchronously calls the provider works for 10 notifications a minute. But the caller now waits seconds for slow providers, and a flash sale sending 5M notifications in an hour would require sustained provider throughput we simply do not control.
+2. **Decouple accepting from sending: add a queue.** The API's only job becomes "validate, check user preferences, drop the message into Kafka, return 202 Accepted." Sending happens later, at whatever pace the providers allow. Kafka also survives restarts, so accepted messages are never lost.
+3. **One queue is not enough: priorities.** If 5M promotional messages are queued ahead of an OTP, the OTP arrives an hour late. So we use **three Kafka topics — critical, high, normal** — and dedicate always-available consumers to the critical topic.
+4. **Workers do the actual sending.** A pool of Go goroutines pulls from the topics, renders the message text from stored templates, and hands it to a channel-specific sender (push, SMS, email). Each sender is wrapped in a per-provider rate limiter so we never exceed FCM/Twilio/SendGrid caps.
+5. **Failures are normal: add a retry queue.** Providers time out and bounce. Failed sends go into a Redis sorted set scored by "retry me at this time," with exponential backoff (1s, 2s, 4s...). After max retries, the message is dead-lettered and logged.
+6. **Everything is recorded.** Every attempt writes to a Delivery Log so support can answer "did user 42 get their OTP?" and dashboards can track provider health.
+
+The diagram below shows the full pipeline, left to right: accept, prioritize, send, retry, log.
+
 ```mermaid
 graph TD
-    API["Notification API\n(Go, REST)"]
-    PriorityQ["Priority Queue\n(Kafka, 3 topics)"]
-    CriticalTopic["Kafka: critical\n(3 partitions)"]
-    HighTopic["Kafka: high\n(12 partitions)"]
-    NormalTopic["Kafka: normal\n(48 partitions)"]
-    WorkerPool["Worker Pool\n(Go, auto-scaled)"]
-    PushWorker["Push Worker\n(FCM/APNs)"]
-    SMSWorker["SMS Worker\n(Twilio)"]
-    EmailWorker["Email Worker\n(SendGrid)"]
-    PrefsDB["User Prefs\n(PostgreSQL)"]
-    TemplateDB["Template Store\n(PostgreSQL + Redis)"]
-    DeliveryLog["Delivery Log\n(PostgreSQL/ClickHouse)"]
-    RetryQueue["Retry Queue\n(Redis sorted set)"]
+    API["Notification API<br/>(Go, REST)"]
+    PriorityQ["Priority Queue<br/>(Kafka, 3 topics)"]
+    CriticalTopic["Kafka: critical<br/>(3 partitions)"]
+    HighTopic["Kafka: high<br/>(12 partitions)"]
+    NormalTopic["Kafka: normal<br/>(48 partitions)"]
+    WorkerPool["Worker Pool<br/>(Go, auto-scaled)"]
+    PushWorker["Push Worker<br/>(FCM/APNs)"]
+    SMSWorker["SMS Worker<br/>(Twilio)"]
+    EmailWorker["Email Worker<br/>(SendGrid)"]
+    PrefsDB["User Prefs<br/>(PostgreSQL)"]
+    TemplateDB["Template Store<br/>(PostgreSQL + Redis)"]
+    DeliveryLog["Delivery Log<br/>(PostgreSQL/ClickHouse)"]
+    RetryQueue["Retry Queue<br/>(Redis sorted set)"]
 
     API -->|"validate + enqueue"| PriorityQ
     API -->|"check prefs"| PrefsDB
@@ -952,6 +1051,16 @@ graph TD
     SMSWorker -->|"log result"| DeliveryLog
     EmailWorker -->|"log result"| DeliveryLog
 ```
+
+**How to read this diagram:**
+
+1. Another service (say, the orders service) calls the Notification API: "send user 42 the order-shipped push notification."
+2. The API checks the User Prefs database — if user 42 opted out of this category, the request stops here.
+3. The API publishes the message to the Kafka topic matching its priority (an OTP goes to `critical`, a promotion to `normal`) and immediately returns 202 Accepted to the caller.
+4. A worker in the auto-scaled Worker Pool consumes the message, fetches the template ("Your order {{.id}} has shipped"), and fills in the parameters.
+5. The worker hands the rendered message to the channel-specific sender — here the Push Worker — which calls FCM/APNs, respecting that provider's rate limit.
+6. If the provider call succeeds, the result is written to the Delivery Log and we are done.
+7. If it fails, the message goes to the Retry Queue (a Redis sorted set scored by next-retry time); a poller re-injects it after the backoff delay, and after 5 failed attempts it is dead-lettered and logged as failed.
 
 ---
 
@@ -1427,6 +1536,18 @@ func main() {
 
 Building a cache from scratch tests your understanding of consistent hashing, LRU eviction, concurrent access patterns, and distributed systems consistency — topics that appear in senior and staff engineer interviews.
 
+### The Problem in Plain Words
+
+Earlier case studies *used* Redis as a magic fast box. This one asks: how would you *build* that box yourself? A cache is just a giant in-memory dictionary — `GET key`, `SET key value`, `DEL key` — that answers in microseconds. Three problems make it interesting. First, memory is finite, so when the cache fills up you must throw something out; the standard answer is to evict the **Least Recently Used** (LRU) item, on the theory that data nobody touched recently is least likely to be needed next. Second, one machine's RAM is not enough for big datasets, so keys must be spread across many machines — and you need a scheme (**consistent hashing**) where adding or removing a machine does not force you to reshuffle every key. Third, machines die, so each key must also live on a second machine (**replication**) to avoid losing the data when one node disappears.
+
+### How We Get to This Design (Step by Step)
+
+1. **Start with a Go map and a mutex on one machine.** That already gives you GET/SET/DEL. But the map grows forever — out of memory eventually.
+2. **Add LRU eviction.** Pair the map with a doubly-linked list ordered by recency: every access moves the item to the front; when full, evict from the back. Both operations stay O(1). Add a TTL field so entries can also expire by time.
+3. **Outgrow one machine: shard the keys.** The naive scheme `node = hash(key) % N` is a trap: changing N from 3 to 4 remaps nearly every key, causing a total cache wipe. **Consistent hashing** places nodes on a ring instead, so adding a node only moves about 1/N of the keys. **Virtual nodes** (each physical node appears many times on the ring) keep the load evenly spread.
+4. **Survive node failures: replicate.** Each key is written to its primary node and asynchronously copied to the next distinct node on the ring. If the primary dies, the replica serves reads.
+5. **Keep the routing in the client.** Rather than a central router (an extra hop and a single point of failure), the Go client SDK holds the ring and computes which node owns each key locally.
+
 ---
 
 ### Requirements
@@ -1640,13 +1761,15 @@ func (c *LRUCache) Len() int {
 
 ### Architecture Diagram: Distributed Cache Cluster
 
+This diagram shows the assembled cluster: an application uses the Go client SDK, which routes each key via the consistent hash ring to one of three cache nodes, and each node asynchronously copies its data to a replica for fault tolerance.
+
 ```mermaid
 graph TD
-    Client["Cache Client\n(Go SDK)"]
-    Ring["Consistent Hash Ring\n(client-side routing)"]
-    Node1["Cache Node 1\n(LRU + TTL)"]
-    Node2["Cache Node 2\n(LRU + TTL)"]
-    Node3["Cache Node 3\n(LRU + TTL)"]
+    Client["Cache Client<br/>(Go SDK)"]
+    Ring["Consistent Hash Ring<br/>(client-side routing)"]
+    Node1["Cache Node 1<br/>(LRU + TTL)"]
+    Node2["Cache Node 2<br/>(LRU + TTL)"]
+    Node3["Cache Node 3<br/>(LRU + TTL)"]
     Replica1["Node 1 Replica"]
     Replica2["Node 2 Replica"]
     Replica3["Node 3 Replica"]
@@ -1659,6 +1782,15 @@ graph TD
     Node2 -->|"async replicate"| Replica2
     Node3 -->|"async replicate"| Replica3
 ```
+
+**How to read this diagram:**
+
+1. The application calls `cache.Set("user:42", data)` through the Go client SDK.
+2. The SDK hashes the key and looks it up on the consistent hash ring it holds locally — no network hop is needed to decide which node owns `user:42`. Say it lands on Cache Node 2.
+3. The SDK sends the SET directly to Cache Node 2, which stores the value in its in-memory LRU structure (evicting the least recently used entry if it is full) and applies any TTL.
+4. Cache Node 2 asynchronously copies the new value to its replica, so the write returns fast but the data soon exists in two places.
+5. A later `cache.Get("user:42")` hashes to the same ring position and reads straight from Node 2 — a microsecond-level memory lookup.
+6. If Node 2 dies, the ring routes requests for its keys to the replica (or the next node on the ring), so the cluster keeps answering while a replacement node is added.
 
 ---
 
@@ -1714,6 +1846,10 @@ Cache coherence ensures that all nodes see consistent values for a key. In a dis
 
 A task scheduler combines cron parsing, distributed locking, leader election, fault tolerance, and at-least-once delivery — topics that surface at companies running large job pipelines (Airbnb, Netflix, Shopify).
 
+### The Problem in Plain Words
+
+Think of Linux `cron`, but for a whole company: "run the daily report at midnight," "ping this URL every 5 minutes," "retry the payout job if it fails." One machine running cron is easy — but if that machine dies at 23:59, the midnight report never runs. So we run several scheduler machines for safety. That creates the opposite problem: if three schedulers all see "midnight report is due," the report runs three times. The core puzzle of this design is therefore: **many machines for fault tolerance, but exactly one of them in charge at any moment.** The standard solution is *leader election* — the machines hold a continuously renewed lock in a coordination service (etcd), the holder is "the leader" and does all scheduling, and the others stand by, ready to take over within seconds if the leader dies.
+
 ---
 
 ### Requirements
@@ -1736,18 +1872,28 @@ A task scheduler combines cron parsing, distributed locking, leader election, fa
 
 ### Architecture with Leader Election
 
+#### How We Get to This Design (Step by Step)
+
+1. **Start with one Go process and a ticker.** Every second it queries PostgreSQL: "which jobs have `next_run <= now`?" — fires them, and advances `next_run` using the cron expression. Simple and correct, but if this process dies, all scheduling stops.
+2. **Run three copies for fault tolerance — and immediately hit duplicate firing.** All three see the same due jobs. We need exactly one active scheduler at a time.
+3. **Add leader election via etcd.** All nodes campaign for a lock; the winner becomes the leader and runs the scheduling loop. The leader keeps a 15-second lease alive in etcd. If it crashes, the lease expires and a standby wins the next election within seconds.
+4. **Separate deciding from doing.** The leader should only *decide* what runs, not execute potentially slow jobs itself (a 10-minute job would block scheduling). So the leader pushes due job IDs onto a **worker queue** (Redis list), and a separate pool of **workers** pops jobs and makes the actual HTTP calls, with retries and timeouts.
+5. **Persist everything.** Job definitions and every run's outcome live in PostgreSQL, so a restart loses nothing and there is a full audit trail. The `FOR UPDATE SKIP LOCKED` query pattern guarantees a job is claimed by only one reader even during leader handover.
+
+The diagram below shows three scheduler nodes (one elected leader, two standbys), etcd coordinating the election, and the worker pool that executes jobs.
+
 ```mermaid
 graph TD
-    etcd["etcd\n(distributed coordination)"]
-    Leader["Scheduler Leader\n(Go, elected via etcd)"]
-    Follower1["Scheduler Follower 1\n(standby)"]
-    Follower2["Scheduler Follower 2\n(standby)"]
-    TaskStore["Task Store\n(PostgreSQL)"]
-    WorkerQueue["Worker Queue\n(Kafka or Redis List)"]
-    Worker1["Task Worker 1\n(Go)"]
-    Worker2["Task Worker 2\n(Go)"]
-    Worker3["Task Worker 3\n(Go)"]
-    JobHistory["Job History\n(PostgreSQL)"]
+    etcd["etcd<br/>(distributed coordination)"]
+    Leader["Scheduler Leader<br/>(Go, elected via etcd)"]
+    Follower1["Scheduler Follower 1<br/>(standby)"]
+    Follower2["Scheduler Follower 2<br/>(standby)"]
+    TaskStore["Task Store<br/>(PostgreSQL)"]
+    WorkerQueue["Worker Queue<br/>(Kafka or Redis List)"]
+    Worker1["Task Worker 1<br/>(Go)"]
+    Worker2["Task Worker 2<br/>(Go)"]
+    Worker3["Task Worker 3<br/>(Go)"]
+    JobHistory["Job History<br/>(PostgreSQL)"]
 
     Follower1 -->|"campaign for leader"| etcd
     Follower2 -->|"campaign for leader"| etcd
@@ -1764,6 +1910,15 @@ graph TD
     Follower1 -->|"watches leader"| etcd
     Follower2 -->|"watches leader"| etcd
 ```
+
+**How to read this diagram:**
+
+1. Three identical scheduler nodes start up. Each campaigns for the leader lock in etcd; exactly one wins and becomes the Leader, while the other two become standby Followers that watch etcd for a leadership change.
+2. Every second, the Leader (and only the Leader) queries the Task Store: "which enabled jobs have `next_run <= now`?"
+3. For each due job, the Leader pushes the job ID onto the Worker Queue and immediately advances the job's `next_run` in PostgreSQL so it is not picked up twice.
+4. Any free Task Worker pops a job ID from the queue, loads the job's details, and executes it — typically an HTTP POST to the job's URL — with a timeout and up to `max_retries` attempts using backoff.
+5. The worker records the outcome (done or failed, duration, error message) in the Job History table.
+6. If the Leader crashes, its etcd lease expires within 15 seconds; a Follower wins the new election and resumes the loop. Jobs enqueued but not yet advanced are re-fetched, which is why job execution must be idempotent (at-least-once delivery).
 
 ---
 

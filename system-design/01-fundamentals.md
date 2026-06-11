@@ -2,15 +2,61 @@
 
 ## Why System Design Matters More in Go
 
+**Why this topic exists:** System design is the skill of planning how a piece of software will work when many machines, many users, and many failures are involved at the same time. Writing a Go program that works on your laptop is programming; making that program survive 100,000 users hitting it per second, a database catching fire, and a network cable being cut — all without losing data — is system design. If you are a complete beginner, think of it as the difference between cooking dinner for your family and running the kitchen of a 500-seat restaurant: the recipes are the same, but everything about coordination, capacity, and failure handling changes.
+
 Go was designed by Google engineers to solve Google-scale problems: high concurrency, distributed coordination, low-latency microservices. This origin story shapes who hires Go developers and what those roles demand. When a company chooses Go over Python or Node.js, they are not looking for someone to write glue scripts or build CRUD APIs — they are solving problems at scale where individual machines are no longer sufficient. That context means Go engineers are expected to reason about distributed systems, network partitions, data consistency trade-offs, and service topology from day one. At companies like Razorpay, Dream11, Zepto, Swiggy, and Ola, Go developers work on payment pipelines, real-time logistics engines, and inventory systems where a wrong sharding decision or missing cache layer costs millions of rupees per minute of downtime. Unlike Java or Python roles where a junior can hide behind frameworks and ORMs for a year, Go roles expose you to the system level immediately.
 
 The second reason is structural: Go's ecosystem encourages writing services rather than monoliths. A Python Django developer can spend two years never thinking about inter-service communication. A Go developer in their first quarter will likely touch gRPC, write a Redis client, and debug a goroutine leak under load. The language attracts companies building the infrastructure layer — not the application layer — of their stack. System design is therefore not an interview filter you clear once; it is the daily vocabulary of the job. Salary bands reflect this: Go roles in India start system design conversations at 8 LPA, and roles above 18 LPA treat it as the dominant interview signal. This guide gives you the vocabulary, the code patterns, and the interview scripts to participate confidently in those conversations.
+
+### What Is High-Level Design (HLD) in Plain Words
+
+**High-Level Design (HLD)** is a drawing of your system as boxes and arrows. Each box is a component (a server, a database, a cache), and each arrow shows data flowing between them. HLD deliberately ignores the small stuff — function names, class structures, exact SQL — and answers the big questions first: What pieces does the system need? How do they talk to each other? What happens when one of them breaks? Its counterpart, Low-Level Design (LLD), zooms into a single box and works out the classes, methods, and data structures inside it. An HLD is like a city map showing neighborhoods and highways; an LLD is the floor plan of one building.
+
+### Where System Design Is Used: Industry and Interviews
+
+In industry, every new feature at a backend-heavy company starts with a design document containing an HLD diagram, capacity numbers, and trade-off discussions. Engineers review it before anyone writes a line of Go. In interviews, almost every backend role above entry level includes a 45-60 minute "design round" where you are given an open-ended prompt ("Design a URL shortener", "Design Uber's location tracking") and must produce an HLD live, narrating your reasoning. This file teaches both: the real engineering concepts and the interview choreography around them.
+
+---
+
+## Key Terms in Plain English
+
+Read this table first. Every term below appears repeatedly in this file. Come back to it whenever a word feels unfamiliar.
+
+| Term | Plain-English Meaning |
+|------|----------------------|
+| Latency | How long one request takes from start to finish. Like the wait time for one customer's coffee order. Measured in milliseconds (ms), microseconds (μs), or nanoseconds (ns). |
+| Throughput | How many requests the system handles per second. Like how many coffees the whole cafe serves per hour. Often written as RPS (requests per second). |
+| QPS / RPS | Queries (or Requests) Per Second — the standard unit of traffic. 1,000 QPS means 1,000 requests arrive every second. |
+| DAU | Daily Active Users — how many distinct people use the system each day. Used to estimate traffic. |
+| P99 latency | The latency that 99% of requests beat. "P99 < 10ms" means only the slowest 1% of requests take longer than 10 milliseconds. |
+| SLA | Service Level Agreement — a promise about reliability, e.g., "99.99% availability" means the system may be down at most ~52 minutes per year. |
+| Load balancer | A traffic director that spreads incoming requests across multiple servers — like a restaurant host seating guests evenly across waiters' sections. |
+| Cache | A small, very fast storage layer (usually in memory, e.g., Redis) holding copies of frequently-read data so you do not ask the slow database every time. Like keeping snacks on your desk instead of walking to the store. |
+| Database replica / Replication | A live copy of a database kept in sync with the original (the "primary"). Replicas can serve reads and take over if the primary dies. |
+| Shard / Sharding | Splitting one big database into several smaller databases, each holding a slice of the data — like a library splitting books across branch locations by author surname. |
+| Hotspot | One server or shard receiving far more traffic than the others, so it overloads while the rest sit idle. |
+| Consistency | Whether every reader sees the same, latest data at the same moment. |
+| Availability | Whether the system answers every request, even during failures (possibly with slightly stale data). |
+| Network partition | A network failure that splits servers into groups that cannot talk to each other, even though each group is still running. |
+| Horizontal scaling | Adding more machines to handle more load (more trucks). |
+| Vertical scaling | Making one machine bigger — more CPU, RAM, disk (a bigger truck). |
+| Stateless service | A server that remembers nothing between requests; all state lives in a database or cache. Any copy of the server can answer any request. |
+| Message queue | A buffer that holds tasks/messages until a worker is ready to process them — like a ticket spike in a kitchen where orders wait for cooks. Examples: Kafka, NATS. |
+| TTL | Time To Live — an expiry timer on a piece of cached data; when it elapses, the data is deleted automatically. |
+| Goroutine | Go's lightweight unit of concurrent work. Thousands can run inside one process; each starts with only 2KB of memory. |
+| Idempotency | The property that running the same operation twice has the same effect as running it once — crucial for safe retries (charging a card twice is bad). |
+| Circuit breaker | A safety switch that stops calling a failing service for a while so the failure does not spread — like an electrical fuse. |
+| Cache stampede / Thundering herd | Thousands of requests missing the cache at the same instant and all slamming the database together. |
+| CDN | Content Delivery Network — servers placed around the world that cache static files close to users. |
+| Failover | Automatically switching to a backup server when the main one dies. |
 
 ---
 
 ## The 5-Step Framework
 
 Every system design interview — regardless of the company, the question, or the time limit — follows the same underlying shape. The five steps below are a consistent skeleton. Your job is to move through them with the right balance of speed and depth, signaling that you have done this before.
+
+The diagram below shows the five steps of a design interview as a loop: you clarify what to build, estimate how big it is, draw the design, zoom into details, find weaknesses — and the weaknesses often send you back to refine requirements.
 
 ```mermaid
 flowchart LR
@@ -26,9 +72,20 @@ flowchart LR
     style E fill:#dc2626,color:#fff
 ```
 
+How to read this diagram:
+
+- Start at the blue box on the left and follow the arrows left to right.
+- Step 1: ask questions until you know exactly what to build and how big it must be.
+- Step 2: turn those answers into numbers (requests per second, storage size).
+- Step 3: draw the boxes-and-arrows picture (the HLD).
+- Step 4: the interviewer picks one or two boxes and you explain their internals.
+- Step 5: hunt for the weakest box under heavy load; the arrow looping back to Step 1 means fixing a bottleneck can change the requirements or the design, so the process is iterative, not one-way.
+
 ---
 
 ### Step 1: Clarify Requirements (3-5 minutes)
+
+Before any drawing, you must understand the problem. **Functional requirements** describe what the system does (e.g., "shorten a URL", "redirect visitors"). **Non-functional requirements** describe how well it must do it — speed, scale, and reliability targets.
 
 **What to say:** Open with functional requirements (what the system does), then non-functional requirements (how well it does it). Do not start drawing until you have asked at least three clarifying questions.
 
@@ -57,9 +114,13 @@ Non-Functional:
   - Strong consistency on writes, eventual on reads OK
 ```
 
+Decoding that board for a beginner: "100M DAU" means 100 million people use it daily. "10:1 read:write" means for every URL created, ten people click an existing short link — the system is **read-heavy**. "Read P99 < 10ms" means 99 out of 100 redirects must complete within 10 milliseconds. "99.99% availability" allows roughly 52 minutes of total downtime per year. "Strong consistency on writes" means once a short URL is created, it must immediately exist everywhere; "eventual on reads OK" means a freshly-created link taking a second to become clickable worldwide is acceptable.
+
 ---
 
 ### Step 2: Capacity Estimation (3-5 minutes)
+
+**Capacity estimation** means converting "100 million users" into engineering numbers: how many requests per second, how much disk, how much network. The point is not precision — it is showing you can reason about scale. Round everything aggressively (a day has ~100,000 seconds for mental math; use 86,400 if you prefer exact).
 
 **What to say:** Estimate write QPS, read QPS, storage per day, bandwidth. Round aggressively — the interviewer wants to see your math, not a precise answer.
 
@@ -74,13 +135,32 @@ Non-Functional:
 
 > "Let me estimate capacity. 100M DAU, assume 1 write per user per day = 100M writes/day = roughly 1,200 writes/second. Reads at 10:1 ratio = 12,000 reads/second. For storage: each URL record is about 500 bytes, 100M records/day = 50GB/day = ~18TB/year — so we need a database that handles multi-TB with fast key lookups. Bandwidth: 12,000 reads/second at 1KB average response = ~12MB/s. These numbers tell me we need a read cache — hitting the DB at 12K RPS is expensive."
 
+Following the math step by step: 100M writes spread over a day's ~86,400 seconds is 100,000,000 / 86,400 ≈ 1,157, rounded to 1,200 writes/second. Multiply by the 10:1 read ratio to get 12,000 reads/second. Storage: 100M records × 500 bytes = 50 billion bytes = 50GB per day; times 365 days ≈ 18TB per year. The final sentence is the most important interview habit: every number must lead to a design decision ("therefore we need a cache").
+
 ---
 
 ### Step 3: High-Level Design (10-15 minutes)
 
+This is the heart of the interview: producing the boxes-and-arrows picture. If you have never drawn an HLD before, use the walkthrough below — it works for almost any system.
+
+#### How to Draw an HLD From Scratch (Beginner Walkthrough)
+
+Build the diagram in this order, adding one layer at a time:
+
+1. **Start with the client.** Draw a box on the left labeled "Client" (browser, mobile app, or another service). Every design starts with whoever sends requests.
+2. **Add the entry point.** Draw a **load balancer** to the client's right. All traffic enters here, and it spreads requests across your servers. (Real systems also have DNS and maybe an API gateway in front; mention them verbally.)
+3. **Add the services.** Draw two or more identical "API Server" boxes behind the load balancer. Drawing more than one signals that your service is stateless and horizontally scalable. These are your Go processes.
+4. **Add storage.** Draw the database the services read and write. Mark the primary (accepts writes) and any read replicas (serve reads, stay in sync via replication).
+5. **Add the cache.** Place a cache (Redis) between the services and the database so repeated reads skip the database.
+6. **Add async pieces last.** If anything can happen "later" instead of "right now" (sending emails, resizing images, analytics), add a message queue and worker boxes. The API writes a task to the queue and responds immediately; workers process tasks at their own pace.
+
+Then label every arrow with its protocol (HTTP, gRPC, TCP) and narrate the two critical paths: the **write path** (how data gets created) and the **read path** (how data gets served).
+
 **What to say:** Draw the boxes and arrows. Name every component. Explain data flow for the two most critical paths (usually a write path and a read path).
 
 **What to draw:**
+
+The diagram below is the classic minimal HLD for a read-heavy web service: a client's requests enter through a load balancer, are handled by interchangeable API servers, and data is served from a fast cache when possible and from the database otherwise.
 
 ```mermaid
 graph TD
@@ -98,6 +178,15 @@ graph TD
     style DB fill:#059669,color:#fff
 ```
 
+How to read this diagram:
+
+- Follow arrows top to bottom: the Client sends a request, which always hits the Load Balancer first.
+- The Load Balancer forwards each request to API Server 1 or API Server 2 — either can handle any request because they are stateless and identical.
+- For a read, the API server first asks the Redis Cache (red); if the data is there (a "cache hit"), it returns in well under a millisecond.
+- If the cache does not have the data (a "cache miss"), the API server queries the database; the arrow from Cache to Read Replica shows misses being refilled from a replica rather than burdening the primary.
+- For a write, the API server goes to the Primary DB (green), the single source of truth for new data.
+- The Primary DB continuously copies its data to the Read Replica (replication), so reads can scale separately from writes.
+
 **Common mistakes:**
 - Drawing one big box labeled "Backend"
 - Forgetting the cache layer
@@ -106,6 +195,8 @@ graph TD
 ---
 
 ### Step 4: Deep Dive Components (10-15 minutes)
+
+After the HLD, the interviewer zooms into one or two boxes and expects detail: what the data looks like (schema), how clients talk to it (API contract), what happens when it breaks (failure modes), and how it grows (scaling strategy).
 
 **What to say:** The interviewer will pick one or two components. Go deep on those. For each: data schema, API contract, failure modes, scaling strategy.
 
@@ -118,9 +209,13 @@ graph TD
 
 > "For the URL store, I'd use a key-value model. The short code is the primary key — 6 alphanumeric characters = 62^6 = 56 billion possible codes, more than enough. I'd shard by the first two characters of the code — gives 3,844 buckets, distributes evenly. Each shard is a Postgres instance with one sync replica. For expiry, I'd store a TTL column and run a background Go goroutine to batch-delete expired rows every 5 minutes, avoiding hot-deletion patterns."
 
+Translation of the jargon: "key-value model" means data is stored as simple pairs (short code → long URL), like a dictionary. "62^6" comes from 26 lowercase + 26 uppercase + 10 digits = 62 possible characters in each of 6 positions. "Shard by the first two characters" means URLs starting with "aa" live on one database, "ab" on another, and so on. "Sync replica" is a backup copy that confirms every write before it counts as saved. "Batch-delete" means deleting expired rows in periodic groups rather than one at a time, which is gentler on the database.
+
 ---
 
 ### Step 5: Identify Bottlenecks (5 minutes)
+
+A **bottleneck** is the component that fails first as traffic grows — like the narrowest point of a funnel. The standard technique: imagine traffic suddenly multiplied by 10 and walk through every box asking which one breaks.
 
 **What to say:** Walk through each component and ask: "where does this break under 10x load?" Then propose mitigations.
 
@@ -132,11 +227,17 @@ graph TD
 
 > "Main bottlenecks I see: First, the cache. At 10x load that's 120K reads/second — Redis single node tops out around 100K ops/second, so I'd shard Redis or use Redis Cluster. Second, the DB write path — 12K writes/second is fine for Postgres with connection pooling via PgBouncer. Third, the redirect service itself — stateless Go servers scale horizontally behind the load balancer, so that's not the bottleneck. The real risk is a cache stampede on cold start — I'd add a probabilistic early expiry or a Singleflight pattern in Go to prevent thundering herd."
 
+New terms in that script: "connection pooling" (reusing a fixed set of database connections instead of opening a new one per request — PgBouncer is a popular tool for this), "cold start" (the moment a freshly restarted cache is empty, so everything misses), and "Singleflight" (a Go library pattern, shown later in this file, that lets only one goroutine fetch a missing value while thousands of identical requests wait for its result).
+
 ---
 
 ## Scalability Fundamentals
 
+**Scalability** is a system's ability to handle growing load by adding resources. This section covers the four core tools: scaling machines, balancing load, caching, and sharding.
+
 ### Horizontal vs Vertical Scaling
+
+A simple analogy: if your delivery truck is overloaded, you can buy a bigger truck (vertical scaling) or buy more trucks (horizontal scaling). Bigger trucks eventually do not exist; more trucks scale forever but need coordination.
 
 **Vertical scaling** means giving one machine more CPU, RAM, or disk. It is simple — no code changes needed — but has a hard ceiling and creates a single point of failure. Use it for: databases that are hard to shard (legacy PostgreSQL), stateful services where partitioning is complex, and when you need a quick win before a traffic spike.
 
@@ -152,6 +253,8 @@ Go goroutines:  8GB / 2KB    = 4,194,304 goroutines theoretical max
 ```
 
 In practice, goroutines are I/O-bound and yield the OS thread while waiting. The Go scheduler multiplexes M goroutines onto N OS threads (N = GOMAXPROCS = number of CPU cores). This means a Go service can handle 50,000 concurrent connections on hardware that would buckle a Java service at 5,000.
+
+In plain terms: "I/O-bound" means most of a request's time is spent waiting (for the database, for the network), not computing. While one goroutine waits, Go parks it for free and runs another on the same CPU core. "Multiplexing M goroutines onto N OS threads" means millions of cheap goroutines share a handful of expensive operating-system threads, like thousands of passengers sharing a few airport shuttle buses.
 
 **Scaling a Go HTTP server horizontally:**
 
@@ -200,19 +303,23 @@ func main() {
 }
 ```
 
+What makes this code "horizontally scalable": it keeps no state in memory between requests, reads its port from the environment (so any container can run it anywhere), and exposes a `/health` endpoint that load balancers poll to decide whether the instance is alive. The explicit timeouts ensure a slow or malicious client cannot hold a goroutine hostage forever.
+
 Deploy 10 identical containers behind a load balancer. Each handles 10K req/s. Total: 100K req/s. Adding capacity requires no code changes — only a new container.
 
 ---
 
 ### Load Balancing
 
-Load balancers distribute incoming requests across multiple backend servers. Three algorithms matter most:
+A **load balancer** distributes incoming requests across multiple backend servers — like a restaurant host who looks at every arriving party and seats them in whichever waiter's section can take them. Without the host, everyone piles into the nearest section while other waiters stand idle. Three algorithms matter most:
 
 **Round Robin** — requests go to servers in rotation: 1, 2, 3, 1, 2, 3. Simple and fair when all servers are identical and requests take similar time. Breaks down when requests have variable cost (one server gets all the slow database queries).
 
 **Least Connections** — routes to the server with the fewest active connections. Better for variable-cost workloads. Requires the load balancer to track connection state. Used in nginx (with `least_conn` directive) and HAProxy.
 
 **Consistent Hashing** — maps requests to servers using a hash of a stable key (user ID, session ID, URL). The same key always routes to the same server unless servers are added or removed. Minimizes cache invalidation when scaling. Critical for stateful services and distributed caches.
+
+To picture consistent hashing: imagine a clock face. Each server is pinned at a few positions around the dial, and each request's key is hashed to a position on the dial too; the request walks clockwise to the first server it meets. When you add or remove a server, only the keys in its small arc of the dial move — everything else stays put. With naive `hash(key) % numServers`, removing one server would reshuffle almost every key, destroying every cache at once.
 
 **When to use each:**
 - Stateless read APIs → Round Robin
@@ -307,6 +414,8 @@ func (r *Ring) Get(key string) string {
 }
 ```
 
+Reading the code as a beginner: the "ring" is a sorted list of numbers (hash positions on the clock face). `Add` pins each server at `replicas` positions by hashing names like `cache-1:6379#0`, `cache-1:6379#1`, and so on — these are the **virtual nodes**. `Get` hashes the key and uses binary search (`sort.Search`) to find the next pin clockwise; if it runs off the end of the list, it wraps to position 0, completing the circle. The `sync.RWMutex` allows many simultaneous readers but exclusive access for writers, since lookups vastly outnumber server changes.
+
 **Usage:**
 ```go
 ring := consistenthash.New(150) // 150 virtual nodes per server
@@ -321,11 +430,11 @@ Virtual nodes (150 per server) solve the hot spot problem. Without them, adding 
 
 ### Caching Strategies
 
-Caching sits between your application and your database. Four patterns cover most production scenarios.
+Caching sits between your application and your database. A **cache** holds copies of frequently-read data in memory so that repeated reads never touch the slower database — the same way a chef keeps today's most-used ingredients on the counter instead of walking to the pantry each time. The hard part of caching is not reading; it is keeping the copy fresh when the original changes, and deciding who is responsible for filling it. Four patterns cover most production scenarios.
 
 #### Cache-Aside (Lazy Loading)
 
-The application is responsible for loading data into cache. On a miss, the app reads from DB and writes to cache. Most common in Go services.
+The application is responsible for loading data into cache. On a miss, the app reads from DB and writes to cache. Most common in Go services. The flow in words: check the cache; if found, return it; if not, fetch from the database, return it, and quietly save a copy in the cache for next time.
 
 ```go
 package cache
@@ -374,11 +483,13 @@ func (s *UserService) GetUser(ctx context.Context, id string) (*User, error) {
 }
 ```
 
+Two beginner-relevant details in this code: `redis.Nil` is the special "key not found" answer, which is normal and expected — any other error means Redis itself is unhealthy, in which case we deliberately ignore it and serve from the database (a cache should never take your service down). The `go func()` writes the cache copy in a separate goroutine so the user's response is not delayed by the cache write.
+
 **When it breaks:** Cache stampede. If 10,000 requests arrive simultaneously for an expired key, all miss the cache and hit the DB. Fix with the Singleflight pattern (covered in Circuit Breaker section).
 
 #### Write-Through
 
-Every write goes to cache AND database synchronously. Cache is always warm. Writes are slower. Good for write-light, read-heavy data.
+Every write goes to cache AND database synchronously. Cache is always warm. Writes are slower. Good for write-light, read-heavy data. Analogy: every time you update your address with the bank, the teller updates both the central record and the branch's local card file before saying "done" — slower at the counter, but the local file is never out of date.
 
 ```go
 func (s *UserService) UpdateUser(ctx context.Context, user *User) error {
@@ -398,11 +509,13 @@ func (s *UserService) UpdateUser(ctx context.Context, user *User) error {
 }
 ```
 
+Note the failure handling: if the cache update fails after the database succeeded, the code deletes the cache entry rather than leaving an old value in place. A missing cache entry causes a harmless extra database read; a stale cache entry causes users to see wrong data.
+
 **When it breaks:** Writes pollute cache with data that is rarely read. Use a TTL to evict cold entries.
 
 #### Write-Behind (Write-Back)
 
-Writes go to cache immediately; a background worker flushes to the database asynchronously. Fastest writes. Risk: data loss if cache crashes before flush.
+Writes go to cache immediately; a background worker flushes to the database asynchronously. Fastest writes. Risk: data loss if cache crashes before flush. Analogy: a waiter scribbles orders on a notepad and enters them into the till in batches between rushes — fast service, but if the notepad is lost before a batch is entered, those orders are gone.
 
 ```go
 type WriteBehindCache struct {
@@ -457,11 +570,13 @@ func (c *WriteBehindCache) flushWorker() {
 }
 ```
 
+The Go idioms here are worth understanding: the buffered channel `flushCh` acts as an in-process queue of keys waiting to be saved. The `select` with a `default` branch is a non-blocking send — if the queue is full, the code falls back to writing the database directly rather than blocking the caller. The background `flushWorker` saves in batches of 100, or every 500ms, whichever comes first, so the database receives a few large writes instead of thousands of tiny ones.
+
 **When it breaks:** Cache node failure before flush = data loss. Use Redis persistence (AOF) or accept the loss (analytics data, view counts).
 
 #### Read-Through
 
-Cache sits in front of DB; the cache layer itself fetches from DB on a miss. Application talks only to the cache. Useful when using a smart cache proxy (like GroupCache or Memcached with a loader).
+Cache sits in front of DB; the cache layer itself fetches from DB on a miss. Application talks only to the cache. Useful when using a smart cache proxy (like GroupCache or Memcached with a loader). The difference from cache-aside is who does the fetching: in cache-aside, your application code fetches from the database; in read-through, the cache layer does it for you.
 
 ```go
 // Read-through using golang.org/x/sync/singleflight to prevent stampede
@@ -501,25 +616,36 @@ func (c *ReadThroughCache) Get(ctx context.Context, id string) (*User, error) {
 }
 ```
 
+The star of this snippet is `singleflight.Group`: when 1,000 goroutines ask for the same missing key at the same instant, only the first one actually runs the function; the other 999 wait and receive the same result. This is the standard Go defense against the cache stampede described earlier.
+
 ---
 
 ### Database Sharding
 
-Sharding distributes data across multiple database instances. Each shard holds a subset of rows. This solves the problem of a single database bottlenecking writes at high scale.
+Sharding distributes data across multiple database instances. Each shard holds a subset of rows. This solves the problem of a single database bottlenecking writes at high scale. The analogy: when one library building cannot hold every book, the city opens branches and splits the collection — authors A-F downtown, G-M uptown, and so on. To find a book, you first need a rule telling you which branch holds it; in software that rule lives in a **shard router**.
+
+The diagram below shows an application that no longer talks to one database; instead a shard router inspects each query's key and forwards it to the one shard holding that user's data.
 
 ```mermaid
 graph TD
     App[Application] --> Router[Shard Router]
-    Router -->|shard 0| DB0[(Shard 0\nUsers A-F)]
-    Router -->|shard 1| DB1[(Shard 1\nUsers G-M)]
-    Router -->|shard 2| DB2[(Shard 2\nUsers N-S)]
-    Router -->|shard 3| DB3[(Shard 3\nUsers T-Z)]
+    Router -->|shard 0| DB0[(Shard 0<br/>Users A-F)]
+    Router -->|shard 1| DB1[(Shard 1<br/>Users G-M)]
+    Router -->|shard 2| DB2[(Shard 2<br/>Users N-S)]
+    Router -->|shard 3| DB3[(Shard 3<br/>Users T-Z)]
     style Router fill:#7c3aed,color:#fff
 ```
 
+How to read this diagram:
+
+- The Application at the top sends every database query to the Shard Router (purple) instead of directly to a database.
+- The Router looks at the query's key (here, the user's name) and picks exactly one shard.
+- A query for user "Bob" follows the "shard 0" arrow because B falls in the A-F range; a query for "Tina" follows "shard 3" (T-Z).
+- Each shard is a full, independent database holding only its slice of users — so four shards each carry roughly a quarter of the total read and write load.
+
 **Range-based sharding:** Partition by range of a key (A-F → shard 0, G-M → shard 1). Simple to understand. Hotspot risk: if all new users have usernames starting with A, shard 0 overloads.
 
-**Hash-based sharding:** `shard = hash(key) % numShards`. Distributes evenly. Resharding when adding shards requires moving data — use consistent hashing to minimize this.
+**Hash-based sharding:** `shard = hash(key) % numShards`. Distributes evenly. Resharding when adding shards requires moving data — use consistent hashing to minimize this. (A **hash function** turns any input into a scrambled but deterministic number, so "user-42" always lands on the same shard, while different users spread out evenly.)
 
 **Go shard router implementation:**
 
@@ -577,6 +703,8 @@ func (r *ShardRouter) GetUser(userID string) (*User, error) {
 }
 ```
 
+Reading the code: the router holds one `*sql.DB` connection pool per shard. `ShardFor` hashes the user ID with FNV (a fast, non-cryptographic hash) and takes the remainder modulo the shard count to pick an index — the hash-based sharding formula from above, in eight lines. `GetUser` then runs an ordinary SQL query, just against the chosen shard.
+
 **Hotspot problem:** If one user (a celebrity) generates 10% of all reads, their shard overloads. Solutions:
 
 1. **Read replicas per shard** — 1 write + 3 read replicas per shard
@@ -587,33 +715,43 @@ func (r *ShardRouter) GetUser(userID string) (*User, error) {
 
 ## CAP Theorem
 
-The CAP theorem states that a distributed system can guarantee at most **two** of three properties simultaneously:
+The CAP theorem is the most-quoted rule in distributed systems, and it answers one question: when the network breaks and your servers cannot all talk to each other, what should they do — keep answering with possibly-stale data, or refuse to answer until they can agree? It states that a distributed system can guarantee at most **two** of three properties simultaneously:
 
 - **C**onsistency: Every read receives the most recent write (or an error)
 - **A**vailability: Every request receives a (non-error) response — no guarantee it's the latest data
 - **P**artition tolerance: The system continues operating even if network partitions split nodes
 
-In practice, network partitions are inevitable (networks fail). So the real trade-off is **CP vs AP**:
+In practice, network partitions are inevitable (networks fail). So the real trade-off is **CP vs AP**: since you must tolerate partitions, the only real choice is whether to sacrifice consistency or availability during one.
+
+The diagram below lays out the three CAP properties and shows which well-known databases fall into each pairing, along with the kinds of products that pick each side.
 
 ```mermaid
 graph TD
     CAP[CAP Triangle]
-    C[Consistency\nAll nodes see same data]
-    A[Availability\nEvery request gets a response]
-    P[Partition Tolerance\nSystem works despite network splits]
+    C[Consistency<br/>All nodes see same data]
+    A[Availability<br/>Every request gets a response]
+    P[Partition Tolerance<br/>System works despite network splits]
 
     CAP --- C
     CAP --- A
     CAP --- P
 
-    C --- CP["CP Systems\netcd, HBase, Zookeeper\nChoose: Banks, Inventory, Ledgers"]
-    A --- AP["AP Systems\nCassandra, DynamoDB, CouchDB\nChoose: Social feeds, Analytics, DNS"]
-    C --- CA["CA Systems\nTraditional RDBMS\nOnly works without network partitions\n(not distributed)"]
+    C --- CP["CP Systems<br/>etcd, HBase, Zookeeper<br/>Choose: Banks, Inventory, Ledgers"]
+    A --- AP["AP Systems<br/>Cassandra, DynamoDB, CouchDB<br/>Choose: Social feeds, Analytics, DNS"]
+    C --- CA["CA Systems<br/>Traditional RDBMS<br/>Only works without network partitions<br/>(not distributed)"]
 
     style CP fill:#2563eb,color:#fff
     style AP fill:#059669,color:#fff
     style CA fill:#6b7280,color:#fff
 ```
+
+How to read this diagram:
+
+- The top node is just a label; the three nodes below it are the properties C, A, and P defined above.
+- The colored boxes at the bottom are the possible pairings: each system family picks two of the three letters.
+- CP systems (blue) keep data consistent during a partition by refusing some requests — right for money and inventory, where a wrong answer is worse than no answer.
+- AP systems (green) keep answering during a partition, accepting that some answers may be stale — right for social feeds and analytics, where a slightly old answer is fine.
+- CA (gray) is shown for completeness: a single-node traditional database is consistent and available, but only because it is not distributed — the moment you spread it across machines, partitions become possible and you must pick CP or AP.
 
 **Real examples in Go ecosystem:**
 
@@ -625,6 +763,8 @@ graph TD
 | CockroachDB | CP | Financial transactions — two nodes must agree before a transfer commits |
 | Redis Cluster | AP (by default) | Cache — stale data is tolerable; availability matters more |
 
+(Two terms from the table: "split-brain" is when a partitioned cluster ends up with two halves that each believe they are in charge, making conflicting decisions. "Service discovery" is the phone book that tells services where to find each other on the network.)
+
 **Practice question:** "Which consistency model would you choose for an inventory system during a flash sale, and why?"
 
 **Answer sketch:** CP. During a sale, two customers must not both see "1 item in stock" and both be allowed to purchase. An incorrect availability response (telling a customer an item is available when it's not) is worse than a brief outage. I'd use etcd or Postgres with serializable isolation for the final deduction step, accepting that a 200ms write lock is preferable to overselling. For the read path (browsing the catalog), AP is fine — stale stock counts for display purposes don't cause harm.
@@ -633,14 +773,20 @@ graph TD
 
 ## Consistency Models
 
-Distributed systems offer a spectrum of consistency guarantees. From strongest to weakest:
+Distributed systems offer a spectrum of consistency guarantees — "how fresh and how ordered is the data each reader sees?" — and stronger guarantees always cost more speed and availability. From strongest to weakest:
+
+The diagram below arranges the four common consistency models from strictest (left, red) to loosest (right, green); each step right is cheaper and faster but promises less.
 
 ```mermaid
 graph LR
-    Strong["Strong Consistency\nLinearizability\nAll reads see latest write"] -->
-    Causal["Causal Consistency\nCausally related ops ordered\nConcurrent ops may differ"] -->
-    ReadYours["Read-Your-Writes\nUser always sees their own writes\nOther users may see older data"] -->
-    Eventual["Eventual Consistency\nAll nodes converge eventually\nNo timing guarantee"]
+    Strong["Strong Consistency<br/>Linearizability<br/>All reads see latest write"]
+    Causal["Causal Consistency<br/>Causally related ops ordered<br/>Concurrent ops may differ"]
+    ReadYours["Read-Your-Writes<br/>User always sees their own writes<br/>Other users may see older data"]
+    Eventual["Eventual Consistency<br/>All nodes converge eventually<br/>No timing guarantee"]
+
+    Strong --> Causal
+    Causal --> ReadYours
+    ReadYours --> Eventual
 
     style Strong fill:#dc2626,color:#fff
     style Causal fill:#d97706,color:#fff
@@ -648,9 +794,18 @@ graph LR
     style Eventual fill:#059669,color:#fff
 ```
 
+How to read this diagram:
+
+- Each box is one consistency model; the arrows point from stronger guarantees to weaker ones.
+- Strong (red): everyone, everywhere, always sees the latest write — like a single shared whiteboard. Most expensive to provide.
+- Causal (orange): if action B was a reaction to action A (a reply to a message), everyone sees A before B; unrelated actions may appear in any order.
+- Read-your-writes (purple): you always see your own updates immediately; other people might briefly see your old data.
+- Eventual (green): all copies agree eventually, with no promise about when — like gossip spreading through a town. Cheapest and fastest.
+- Design tip: choose the weakest model your feature can tolerate; never pay for strong consistency where eventual is harmless.
+
 ### Strong Consistency
 
-Every read returns the most recent write. Achieved with distributed locking (etcd), two-phase commit, or Raft consensus. Expensive: every write must be acknowledged by a quorum before returning.
+Every read returns the most recent write. Achieved with distributed locking (etcd), two-phase commit, or Raft consensus. Expensive: every write must be acknowledged by a quorum before returning. (A **quorum** is a majority of nodes — e.g., 2 of 3 — that must confirm a write before it counts; **Raft** is a popular algorithm for getting machines to agree on an ordered log of changes; a **distributed lock** is a lock shared across machines so only one process in the whole cluster can hold it at a time.)
 
 **Go code showing strong consistency via distributed lock with etcd:**
 
@@ -678,9 +833,11 @@ func transferFunds(client *clientv3.Client, fromID, toID string, amount int64) e
 }
 ```
 
+What this buys you: no matter how many servers run `transferFunds` simultaneously for the same account, etcd guarantees only one holds the lock at a time, so two transfers can never read the same balance and both spend it.
+
 ### Eventual Consistency with Conflict Resolution
 
-In AP systems, two nodes may accept conflicting writes. When they reconcile, you need a conflict resolution strategy.
+In AP systems, two nodes may accept conflicting writes. When they reconcile, you need a conflict resolution strategy. The two classic strategies below are Last-Write-Wins (keep whichever write has the later timestamp) and CRDTs (data structures mathematically designed so that merging two copies always produces the same correct result, no matter the order).
 
 ```go
 // Last-Write-Wins using vector clocks (simplified)
@@ -741,6 +898,8 @@ func (c *GCounter) Merge(other *GCounter) {
 }
 ```
 
+The GCounter trick, in plain words: instead of one shared number, each node counts only its own increments in its own slot of the map. The total is the sum of all slots. Merging two copies just takes the maximum of each slot — an operation that is safe to repeat, safe in any order, and always converges to the right answer. That is what makes it a CRDT (Conflict-free Replicated Data Type).
+
 ### Interview Q&A — Consistency Models
 
 **Q1: What is the difference between strong consistency and linearizability?**
@@ -767,37 +926,57 @@ A: Pass a "read-at-least-version" token. When a write completes, return the repl
 
 ## Availability Patterns
 
+**Availability** is the fraction of time your system successfully answers requests. The patterns in this section all answer the same question: when a machine dies (and it will), how does the system keep serving?
+
 ### Failover
+
+**Failover** means automatically promoting a backup when the main server fails — like an understudy stepping in when the lead actor falls ill. The two arrangements differ in whether the backup sits idle or also works.
 
 **Active-Passive (Hot Standby):** One node handles all traffic. A standby node receives replication but serves no traffic. On failure, the standby is promoted. Downtime during promotion (typically 30-60 seconds). Used by most Postgres deployments.
 
 **Active-Active:** Multiple nodes serve traffic simultaneously. On failure of one node, the load balancer routes its traffic to surviving nodes — zero downtime. Requires all nodes to accept writes, which means conflict resolution (more complex). Used by DynamoDB, Cassandra, and multi-region databases.
 
+The diagram below puts both arrangements side by side: on the left, one primary works while a standby waits; on the right, two nodes share the work and keep each other in sync.
+
 ```mermaid
 graph LR
-    subgraph "Active-Passive"
-        LB1[Load Balancer] --> Primary1[(Primary\nHandles ALL traffic)]
-        Primary1 -.->|async replication| Standby1[(Standby\nIdle)]
+    subgraph APassive["Active-Passive"]
+        LB1[Load Balancer] --> Primary1[(Primary<br/>Handles ALL traffic)]
+        Primary1 -.->|async replication| Standby1[(Standby<br/>Idle)]
     end
 
-    subgraph "Active-Active"
-        LB2[Load Balancer] --> Node1[(Node A\nServes 50%)]
-        LB2 --> Node2[(Node B\nServes 50%)]
+    subgraph AActive["Active-Active"]
+        LB2[Load Balancer] --> Node1[(Node A<br/>Serves 50%)]
+        LB2 --> Node2[(Node B<br/>Serves 50%)]
         Node1 <-->|bidirectional sync| Node2
     end
 ```
 
+How to read this diagram:
+
+- The left group is Active-Passive: the load balancer sends 100% of traffic to the Primary; the Standby just receives copies of the data (the dotted arrow means asynchronous replication — copying happens in the background) and serves nothing.
+- If the Primary dies, the Standby is promoted to Primary; users wait roughly 30-60 seconds during the switch.
+- The right group is Active-Active: the load balancer splits traffic between Node A and Node B, both serving 50%.
+- The double-headed arrow means the two nodes continuously sync each other's writes in both directions — which is why they must handle write conflicts.
+- If Node A dies, the load balancer simply sends everything to Node B with no promotion step — zero downtime, but more complexity while healthy.
+
 ### Replication
+
+Replication is the act of keeping live copies of data on multiple machines. The key design choice is when the copy happens relative to acknowledging the write:
 
 **Synchronous replication:** Write is acknowledged only after all replicas confirm. Zero data loss. Higher write latency. Use for financial data.
 
 **Asynchronous replication:** Write is acknowledged after the primary writes. Replicas catch up later. Lower write latency. RPO (recovery point objective) > 0 — some data may be lost if primary fails. Use for read scaling where stale data is acceptable.
 
+(**RPO**, recovery point objective, is how many seconds or minutes of recent data you are willing to lose in a disaster. Synchronous replication gives RPO = 0; asynchronous gives RPO equal to the replication lag.)
+
 ---
 
 ### Circuit Breaker Pattern (Full Implementation)
 
-The circuit breaker prevents cascading failures. When a downstream service is failing, the circuit "opens" and subsequent calls fail fast instead of queuing up and consuming goroutines.
+The circuit breaker prevents cascading failures. When a downstream service is failing, the circuit "opens" and subsequent calls fail fast instead of queuing up and consuming goroutines. The name comes from the electrical fuse in your home: when something shorts, the fuse trips and cuts power instantly, protecting the whole house — rather than letting the fault burn everything down. A **cascading failure** is the domino effect where one slow service makes its callers slow, which makes their callers slow, until the whole platform is down.
+
+The state diagram below shows the three states a circuit breaker moves through: working normally (Closed), blocking calls after too many failures (Open), and cautiously testing recovery (Half-Open).
 
 ```mermaid
 stateDiagram-v2
@@ -807,6 +986,14 @@ stateDiagram-v2
     HalfOpen --> Closed : probe request succeeds
     HalfOpen --> Open : probe request fails
 ```
+
+How to read this diagram:
+
+- The breaker starts in Closed (counterintuitively, "closed" means traffic flows — like a closed electrical circuit conducting electricity).
+- While Closed, every call passes through; the breaker just counts failures.
+- Too many consecutive failures trips it to Open: now every call is rejected instantly with an error, without even attempting the downstream service. This protects your goroutines and gives the failing service room to recover.
+- After a cooldown timeout, the breaker moves to Half-Open: it lets a small number of trial ("probe") requests through.
+- If the probes succeed, the service has recovered — back to Closed (normal). If they fail, back to Open for another cooldown.
 
 ```go
 package circuitbreaker
@@ -932,6 +1119,8 @@ func (cb *CircuitBreaker) recordResult(err error) {
 }
 ```
 
+Two implementation details worth noticing as a Go learner: the actual call `fn()` runs **outside** the mutex, so one slow downstream request never blocks every other goroutine going through the breaker; and all state transitions live in two small functions (`currentState` and `recordResult`) that are only called while holding the lock, which keeps the concurrency reasoning contained.
+
 **Usage in a Go service:**
 
 ```go
@@ -948,9 +1137,15 @@ func callPaymentService(order Order) error {
 }
 ```
 
+Reading the config: after 5 consecutive failures the breaker opens; it stays open for 10 seconds; then it allows 3 probe requests, and only if all succeed does normal traffic resume.
+
 ---
 
 ## Latency and Throughput
+
+These two words anchor every performance conversation. **Latency** is how long one request takes (the customer's wait). **Throughput** is how many requests complete per second (the kitchen's output). They are related but not the same: adding servers raises throughput without making any single request faster.
+
+A quick guide to the time units below: 1 second = 1,000 milliseconds (ms) = 1,000,000 microseconds (μs) = 1,000,000,000 nanoseconds (ns). Computers live at the nanosecond scale; networks live at the millisecond scale — a million times slower.
 
 ### Latency Numbers Every Engineer Should Know
 
@@ -974,6 +1169,8 @@ These numbers (approximate, circa 2024 hardware) are the foundation of capacity 
 | Read 1GB from SSD | 1 s | |
 | HDD seek | 10 ms | 20x slower than SSD |
 
+To make the scale intuitive: if an L1 cache read (1 ns) took 1 second, a RAM read would take almost 2 minutes, an SSD read over 40 hours, and a cross-region network round trip more than 3 years. This is why "where does the data live?" is the first performance question.
+
 **Key takeaways for interviews:**
 - Memory is 1,000x faster than SSD. Always cache hot data in memory.
 - Redis (in-memory) is 10-100x faster than a DB query.
@@ -989,6 +1186,8 @@ Throughput is requests per second (RPS) the system can sustain. For a Go HTTP se
 ```
 Throughput = (Number of goroutines processing requests) / (Average request latency)
 ```
+
+The intuition: if each worker takes 50ms per job, one worker finishes 20 jobs per second; 500 workers finish 10,000 per second.
 
 If your handler takes 50ms on average and you have 500 concurrent goroutines:
 
@@ -1031,6 +1230,8 @@ func instrumentedHandler(next http.Handler) http.Handler {
 }
 ```
 
+This is **middleware**: a wrapper around your real handler that runs before and after it. It counts requests currently in flight and keeps a smoothed average latency (the exponential moving average gives 90% weight to history and 10% to the newest sample, so one slow request does not whipsaw the metric). `expvar` exposes these numbers at `/debug/vars` over HTTP for free.
+
 ---
 
 ### Little's Law Applied to Go Goroutine Pools
@@ -1040,6 +1241,8 @@ Little's Law: **L = λ × W**
 - L = average number of items in the system (goroutines in flight)
 - λ = average arrival rate (requests/second)
 - W = average time an item spends in the system (request latency)
+
+A supermarket makes this intuitive: if 5 customers arrive per minute (λ) and each spends 10 minutes inside (W), then on average 50 customers are in the store (L). The law is universal — it works for stores, queues, and goroutines alike — and for a Go service it predicts exactly how many goroutines will be alive at any moment.
 
 **Example:** Your Go service receives 5,000 req/s. Average handler time is 20ms.
 
@@ -1056,6 +1259,8 @@ L = 5,000 × 0.200 = 1,000 goroutines in flight
 ```
 
 Now a sudden 2x traffic spike = 2,000 goroutines. You're near your pool limit. This is why timeouts on outbound calls matter enormously.
+
+Notice the punchline: nothing about your traffic changed — one slow dependency multiplied your in-flight goroutines by 10, because requests now linger 10x longer. Slow downstream calls quietly consume your capacity, and a timeout is the tool that caps how long a request may linger.
 
 ```go
 // Always set timeouts on outbound HTTP clients
@@ -1081,28 +1286,32 @@ Script:
 
 ## Data Modeling Decisions
 
+**Data modeling** is deciding how your data is shaped and which database stores it. Two definitions you need first: **ACID transactions** are a guarantee from relational (SQL) databases that a group of changes is all-or-nothing, consistent, isolated from concurrent changes, and durable once committed — exactly what money movement needs. **NoSQL** is the umbrella term for non-relational databases (key-value stores, document stores, time-series databases) that relax some of those guarantees in exchange for flexibility or scale.
+
 ### SQL vs NoSQL Decision Flowchart
+
+The flowchart below turns the database choice into a sequence of yes/no questions about your data: do you need transactions, is the shape of the data fixed, and how heavy are the writes?
 
 ```mermaid
 flowchart TD
-    Start([New Data Store Needed]) --> Q1{Do you need ACID\ntransactions?}
-    Q1 -->|Yes| Q2{Multi-table\ntransactions?}
-    Q1 -->|No| Q3{Is the schema\nflexible/unknown?}
+    Start([New Data Store Needed]) --> Q1{Do you need ACID<br/>transactions?}
+    Q1 -->|Yes| Q2{Multi-table<br/>transactions?}
+    Q1 -->|No| Q3{Is the schema<br/>flexible/unknown?}
 
-    Q2 -->|Yes| SQL[(PostgreSQL\nMySQL)]
-    Q2 -->|No, single row| Q4{Massive write\nthroughput?}
+    Q2 -->|Yes| SQL[(PostgreSQL<br/>MySQL)]
+    Q2 -->|No, single row| Q4{Massive write<br/>throughput?}
 
-    Q3 -->|Yes| Q5{Document or\nKey-Value?}
-    Q3 -->|No, fixed schema| Q6{Read-heavy with\ncomplex queries?}
+    Q3 -->|Yes| Q5{Document or<br/>Key-Value?}
+    Q3 -->|No, fixed schema| Q6{Read-heavy with<br/>complex queries?}
 
-    Q4 -->|Yes| KV[(Redis\nDynamoDB)]
+    Q4 -->|Yes| KV[(Redis<br/>DynamoDB)]
     Q4 -->|No| SQL
 
-    Q5 -->|Document| Doc[(MongoDB\nFirestore)]
+    Q5 -->|Document| Doc[(MongoDB<br/>Firestore)]
     Q5 -->|Key-Value| KV
 
     Q6 -->|Yes| SQL
-    Q6 -->|No, time series| TS[(TimescaleDB\nInfluxDB)]
+    Q6 -->|No, time series| TS[(TimescaleDB<br/>InfluxDB)]
 
     style SQL fill:#2563eb,color:#fff
     style KV fill:#dc2626,color:#fff
@@ -1110,9 +1319,18 @@ flowchart TD
     style TS fill:#059669,color:#fff
 ```
 
+How to read this diagram:
+
+- Start at the rounded box at the top and answer each diamond-shaped question, following the arrow that matches your answer.
+- First question: do you need ACID transactions (all-or-nothing groups of changes, e.g., debit one account and credit another together)? If yes and the changes span multiple tables, go straight to a SQL database (blue).
+- If you need transactions but only ever touch one row at a time, the deciding factor becomes write volume: massive write throughput points to a key-value store (red), otherwise SQL is still simplest.
+- If you do not need transactions, ask whether the data's shape is fixed: flexible or unknown schemas lead to document stores (purple) for nested JSON-like records, or key-value stores for simple lookups.
+- Fixed schema without transactions splits on query style: complex queries favor SQL; append-heavy timestamped measurements (metrics, sensor data) favor a time-series database (green).
+- Real systems often use several of these at once — e.g., PostgreSQL for orders, Redis for sessions, InfluxDB for metrics.
+
 ### When to Denormalize
 
-Normalization (3NF) eliminates data duplication. Denormalization intentionally reintroduces duplication to speed up reads.
+Normalization (3NF) eliminates data duplication. Denormalization intentionally reintroduces duplication to speed up reads. In plain terms: normalized data stores each fact exactly once (a user's name lives only in the `users` table), and queries **join** tables together to assemble full pictures. Joins cost time. Denormalizing copies a fact into the rows that need it, so reads skip the join — at the price of having to update every copy when the fact changes.
 
 **Denormalize when:**
 - A read query joins 4+ tables and runs > 1,000 times/second
@@ -1158,7 +1376,11 @@ func updateUserName(ctx context.Context, db *sql.DB, userID, newName string) err
 }
 ```
 
+The code shows the price of denormalization concretely: renaming a user now requires updating two tables inside one transaction (`BeginTx` ... `Commit`), so both copies change together or not at all. The `defer tx.Rollback()` is a Go safety idiom — if anything fails before `Commit`, the transaction is automatically undone.
+
 ### Indexing Strategy for Common Go Service Patterns
+
+An **index** is a sorted lookup structure the database maintains alongside a table so it can find rows without scanning everything — like the index at the back of a textbook versus reading every page.
 
 | Pattern | Index Type | Example |
 |---------|-----------|---------|
@@ -1169,6 +1391,8 @@ func updateUserName(ctx context.Context, db *sql.DB, userID, newName string) err
 | Composite: user + status | Composite B-tree | `WHERE user_id = $1 AND status = $2` |
 | JSON field lookup | GIN on jsonb column | `WHERE metadata @> '{"country":"IN"}'` |
 | Geospatial | GiST (PostGIS) | `WHERE ST_DWithin(location, $1, $2)` |
+
+(B-tree is the default sorted-tree index good for equality and ranges; GIN and GiST are specialized Postgres index types for searching inside documents, JSON, and geometric data.)
 
 **Go: always check your indexes are being used:**
 
@@ -1183,11 +1407,17 @@ rows, err := db.QueryContext(ctx,
 // Parse and log the query plan — if you see "Seq Scan" on a large table, add an index
 ```
 
+"Seq Scan" in a query plan means the database is reading the entire table row by row — the signal that your query is not using an index and will get slower as the table grows.
+
 ---
 
 ## API Design
 
+An **API** (Application Programming Interface) is the contract through which clients talk to your service: which URLs or methods exist, what they accept, and what they return. The three dominant styles are **REST** (plain HTTP requests with JSON bodies — simple and universal), **gRPC** (a binary protocol from Google using Protobuf schemas over HTTP/2 — fast and strongly typed, ideal between internal services), and **GraphQL** (clients send a query describing exactly which fields they want — flexible for apps with many screens and data shapes).
+
 ### REST vs gRPC vs GraphQL
+
+The flowchart below picks an API style by asking two questions: who is the client, and what do they need most — flexibility, simplicity, or raw speed?
 
 ```mermaid
 graph TD
@@ -1195,12 +1425,12 @@ graph TD
     Q1 --> Service[Internal Microservice]
     Q1 --> Mixed[Mixed: mobile + web + partners]
 
-    Browser --> Q2{Complex data\nfetching needs?}
-    Q2 -->|Yes, many query shapes| GraphQL[GraphQL\nFlexible queries\nGood for BFF pattern]
-    Q2 -->|No, standard CRUD| REST[REST/JSON\nHTTP/1.1\nSimple, cacheable]
+    Browser --> Q2{Complex data<br/>fetching needs?}
+    Q2 -->|Yes, many query shapes| GraphQL[GraphQL<br/>Flexible queries<br/>Good for BFF pattern]
+    Q2 -->|No, standard CRUD| REST[REST/JSON<br/>HTTP/1.1<br/>Simple, cacheable]
 
-    Service --> Q3{Performance\ncritical?}
-    Q3 -->|Yes, high QPS| GRPC[gRPC\nProtobuf\nHTTP/2 multiplexing\n10x faster serialization]
+    Service --> Q3{Performance<br/>critical?}
+    Q3 -->|Yes, high QPS| GRPC[gRPC<br/>Protobuf<br/>HTTP/2 multiplexing<br/>10x faster serialization]
     Q3 -->|No, occasional calls| REST
 
     Mixed --> REST
@@ -1209,6 +1439,14 @@ graph TD
     style REST fill:#2563eb,color:#fff
     style GRPC fill:#7c3aed,color:#fff
 ```
+
+How to read this diagram:
+
+- Start at the top diamond and classify your caller: a browser/mobile app, one of your own internal services, or a mix including external partners.
+- Browser or mobile clients with many different data shapes per screen point to GraphQL (red) — "BFF pattern" means Backend-For-Frontend, a server tailored to one specific UI.
+- Browser clients doing standard CRUD (Create, Read, Update, Delete) are best served by plain REST (blue), which browsers and HTTP caches understand natively.
+- Internal service-to-service calls at high volume point to gRPC (purple): its binary Protobuf encoding serializes roughly 10x faster than JSON, and HTTP/2 multiplexing lets many calls share one connection.
+- A mixed audience defaults to REST because it is the lowest common denominator every client can speak.
 
 **Go developers choose gRPC for:**
 - Internal service-to-service communication (10,000+ calls/second between services)
@@ -1224,6 +1462,8 @@ graph TD
 ---
 
 ### Rate Limiting with Token Bucket (Full Go Implementation)
+
+**Rate limiting** caps how many requests a single user (or IP) may make per second, protecting the service from abuse and overload. The **token bucket** algorithm pictures a bucket that drips tokens in at a steady rate and holds at most `capacity` tokens; each request must take one token to proceed. The bucket's stored tokens allow short bursts (a user can spend 100 saved tokens at once), while the drip rate enforces the sustained average.
 
 ```go
 package ratelimit
@@ -1341,6 +1581,8 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 }
 ```
 
+A subtle elegance to notice: there is no background goroutine refilling tokens. Instead, `Allow` computes how much time passed since the last call and adds the tokens that "would have" dripped in during that gap — a lazy-refill trick that makes each bucket cost nothing while idle. The `RateLimiter` wrapper keeps one bucket per user in a map, so each user gets an independent allowance, and rejected requests receive HTTP 429 ("Too Many Requests") with a `Retry-After` hint.
+
 **Usage:**
 
 ```go
@@ -1355,6 +1597,8 @@ mux.Handle("/api/", limiter.Middleware(apiHandler))
 ---
 
 ### API Versioning Strategies
+
+Once an API has external users, you cannot change its responses without breaking them. **Versioning** lets old clients keep using v1 while new clients adopt v2.
 
 | Strategy | Example | Pros | Cons |
 |----------|---------|------|------|
@@ -1382,6 +1626,8 @@ mux.Handle("/api/v2/", http.StripPrefix("/api/v2", v2))
 ## Interview Practice
 
 20 system design questions at beginner-intermediate level. For each: read the question, sketch your own answer (5 minutes), then compare with the answer sketch below.
+
+How to use this section as a beginner: do not expect to produce these answers on day one. First read each sketch and make sure you can define every term in it (use the glossary at the top of this file). Then, on a second pass, cover the answer, set a 5-minute timer, and draw your own HLD using the six-step walkthrough from the High-Level Design section: client, entry point, services, cache, storage, async pieces. Compare against the sketch and note which component you forgot — beginners most often forget the cache, the queue, or the failure handling.
 
 ---
 

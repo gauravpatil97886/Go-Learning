@@ -775,6 +775,19 @@ async function renderMarkdown(markdown, path) {
 
   // Intercept internal .md link clicks — load within SPA instead of navigating away
   const currentDir = path.includes('/') ? path.substring(0, path.lastIndexOf('/') + 1) : '';
+
+  // In-page anchor links (e.g. a file's own table of contents) must scroll,
+  // not change the routing hash — the router would treat it as a topic path
+  body.querySelectorAll('a[href^="#"]').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = decodeURIComponent(link.getAttribute('href').slice(1));
+      const target = document.getElementById(id);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+
   body.querySelectorAll('a[href]').forEach(link => {
     const href = link.getAttribute('href');
     if (!href || href.startsWith('http') || href.startsWith('//') || href.startsWith('#') || href.startsWith('mailto:')) return;
@@ -808,6 +821,11 @@ async function renderMarkdown(markdown, path) {
     hljs.highlightElement(block);
   });
 
+  // Content panel must be visible BEFORE mermaid runs — diagrams rendered
+  // inside a display:none container measure text as zero-width and edge
+  // label layout throws ("Could not find a suitable point...")
+  showPanel('content');
+
   // Render mermaid diagrams
   await renderMermaidDiagrams();
 
@@ -835,8 +853,6 @@ async function renderMarkdown(markdown, path) {
   // Reading progress
   setupReadingProgress();
 
-  showPanel('content');
-
   // Warm the cache for adjacent topics (instant prev/next)
   prefetchNeighbors(path);
 }
@@ -852,6 +868,7 @@ async function renderMermaidDiagrams() {
     } catch (e) {
       node.classList.add('mermaid-failed');
       node.innerHTML = '<div class="mermaid-error">Diagram failed to render</div>';
+      console.error('Mermaid render error:', e);
     }
   }
 }
@@ -1676,11 +1693,13 @@ function bindEventListeners() {
       return;
     }
     const path = e.state?.path || location.hash.slice(1);
-    if (path) {
-      loadTopic(path, false);
-    } else {
-      showWelcome();
+    if (!path) { showWelcome(); return; }
+    // Hash is an in-page heading anchor, not a topic path — just scroll to it
+    if (!path.endsWith('.md') && path !== '__blogs__') {
+      const anchor = document.getElementById(decodeURIComponent(path));
+      if (anchor) { anchor.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
     }
+    loadTopic(path, false);
   });
 
   // Close sidebar when clicking overlay
