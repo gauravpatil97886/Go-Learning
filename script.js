@@ -28,6 +28,7 @@ const ICONS = {
   'ctc-prep':     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>`,
   'system-design':`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>`,
   'dsa-go':       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+  blogs:          `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`,
   goroutine:      `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
   channel:        `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
   target:         `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>`,
@@ -110,6 +111,7 @@ const NAVIGATION = [
       { title: 'Sync Primitives',          path: 'coding-practice/concurrency/03-sync-primitives.md', level: 'mixed' },
       { title: 'Context Practice',         path: 'coding-practice/concurrency/04-context.md', level: 'mixed' },
       { title: 'Concurrency Patterns',     path: 'coding-practice/concurrency/05-patterns.md', level: 'mixed' },
+      { title: 'Debug This: Real Bugs',    path: 'coding-practice/concurrency/06-debugging-exercises.md', level: 'advanced' },
       { title: 'Generics Practice',        path: 'coding-practice/advanced/01-generics.md', level: 'mixed' },
       { title: 'Testing Practice',         path: 'coding-practice/advanced/02-testing.md', level: 'mixed' },
       { title: 'HTTP APIs Practice',       path: 'coding-practice/applications/01-http-apis.md', level: 'mixed' },
@@ -122,9 +124,13 @@ const NAVIGATION = [
       { title: 'Intermediate Q&A',       path: 'interview-prep/intermediate.md',            level: 'intermediate' },
       { title: 'Advanced Q&A',           path: 'interview-prep/advanced.md',                level: 'advanced' },
       { title: 'Concurrency Interviews', path: 'interview-prep/concurrency-interviews.md',  level: 'advanced' },
+      { title: 'Behavioral (STAR)',      path: 'interview-prep/behavioral.md',              level: 'mixed' },
       { title: 'Google Style',           path: 'interview-prep/company-google.md',          level: 'advanced' },
+      { title: 'Amazon Style',           path: 'interview-prep/company-amazon.md',          level: 'advanced' },
+      { title: 'Microsoft Style',        path: 'interview-prep/company-microsoft.md',       level: 'advanced' },
       { title: 'Uber Style',             path: 'interview-prep/company-uber.md',            level: 'advanced' },
       { title: 'Stripe Style',           path: 'interview-prep/company-stripe.md',          level: 'advanced' },
+      { title: 'Razorpay Style',         path: 'interview-prep/company-razorpay.md',        level: 'advanced' },
     ]},
   { id: 'ctc-prep', title: 'CTC Prep', color: '#f59e0b',
     desc: 'Band-by-band roadmap: crack 10 LPA, 20 LPA, 30+ LPA roles.',
@@ -149,6 +155,11 @@ const NAVIGATION = [
       { title: 'Trees & Graphs',         path: 'dsa-go/02-trees-graphs.md',        level: 'mixed' },
       { title: 'Dynamic Programming',    path: 'dsa-go/03-dynamic-programming.md', level: 'advanced' },
       { title: 'Concurrent DS & Heap',   path: 'dsa-go/04-concurrency-ds.md',      level: 'advanced' },
+    ]},
+  { id: 'blogs', title: 'Industry Blogs', color: '#34D058',
+    desc: 'Real engineering blogs from companies running Go in production.',
+    topics: [
+      { title: 'Engineering Blogs', path: '__blogs__' },
     ]},
 ];
 
@@ -593,6 +604,15 @@ async function loadTopic(path, pushHistory = true) {
     history.replaceState({ path }, '', `#${path}`);
   }
 
+  // Special route: Industry Blogs view (not a markdown file)
+  if (path === '__blogs__') {
+    updateActiveNav(path);
+    renderBlogsView();
+    showPanel('content');
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    return;
+  }
+
   trackRecent(path);
   updateActiveNav(path);
 
@@ -661,7 +681,7 @@ async function revalidateTopic(path, cachedMd) {
 function prefetchNeighbors(path) {
   const idx = STATE.searchIndex.findIndex(t => t.path === path);
   [STATE.searchIndex[idx + 1], STATE.searchIndex[idx - 1]].forEach(entry => {
-    if (!entry || CONTENT_CACHE.get(entry.path)) return;
+    if (!entry || !entry.path.endsWith('.md') || CONTENT_CACHE.get(entry.path)) return;
     fetch(new URL(entry.path, window.location.href).href)
       .then(r => r.ok ? r.text() : null)
       .then(md => {
@@ -675,6 +695,12 @@ function prefetchNeighbors(path) {
 
 /** Parse and inject markdown into the DOM */
 async function renderMarkdown(markdown, path) {
+  // Restore chrome that the blogs view may have hidden
+  const metaBar = document.getElementById('topic-meta');
+  const footNav = document.getElementById('content-footer-nav');
+  if (metaBar) metaBar.style.display = '';
+  if (footNav) footNav.style.display = '';
+
   const body = document.getElementById('markdown-body');
   let html;
   try {
@@ -1686,6 +1712,131 @@ function enterReadingMode() {
 
 function exitReadingMode() {
   document.body.classList.remove('reading-mode');
+}
+
+/* ══════════════════════════════════════════════════════════════
+   INDUSTRY BLOGS VIEW
+   ══════════════════════════════════════════════════════════════ */
+
+const BLOG_CATEGORY_COLORS = {
+  'Consumer & Delivery':        '#f59e0b',
+  'Cloud & Infrastructure':     '#00C8F0',
+  'Fintech & Payments':         '#34D058',
+  'Streaming, Media & Gaming':  '#C084FC',
+  'E-commerce & Social':        '#FF6B3C',
+  'Official Go Team & Deep Dives': '#F5C000',
+};
+
+const BLOGS_STATE = { category: 'All', query: '' };
+
+function renderBlogsView() {
+  const body = document.getElementById('markdown-body');
+  if (!body) return;
+
+  // Hide topic chrome that doesn't apply to this view
+  const metaBar = document.getElementById('topic-meta');
+  const footNav = document.getElementById('content-footer-nav');
+  const toc     = document.getElementById('toc');
+  if (metaBar) metaBar.style.display = 'none';
+  if (footNav) footNav.style.display = 'none';
+  if (toc) toc.hidden = true;
+
+  const secEl = document.getElementById('breadcrumb-section');
+  const topEl = document.getElementById('breadcrumb-topic');
+  if (secEl) secEl.textContent = 'Industry Blogs';
+  if (topEl) topEl.textContent = 'Engineering Blogs';
+
+  const blogs = (typeof BLOGS !== 'undefined' && Array.isArray(BLOGS)) ? BLOGS : [];
+
+  if (!blogs.length) {
+    body.innerHTML = `
+      <div class="blogs-hero">
+        <h1 class="blogs-title">Go in <span class="gradient-text">Production</span></h1>
+        <p class="blogs-sub">Real engineering blogs from companies running Go at scale.</p>
+      </div>
+      <div class="blogs-empty">Blog collection is being curated — check back shortly.</div>`;
+    return;
+  }
+
+  const categories = ['All', ...new Set(blogs.map(b => b.category))];
+  const companies  = new Set(blogs.map(b => b.company)).size;
+
+  const visible = blogs.filter(b => {
+    if (BLOGS_STATE.category !== 'All' && b.category !== BLOGS_STATE.category) return false;
+    if (BLOGS_STATE.query) {
+      const q = BLOGS_STATE.query.toLowerCase();
+      return b.company.toLowerCase().includes(q)
+        || b.title.toLowerCase().includes(q)
+        || (b.tags || []).some(t => t.toLowerCase().includes(q));
+    }
+    return true;
+  });
+
+  body.innerHTML = `
+    <div class="blogs-hero">
+      <h1 class="blogs-title">Go in <span class="gradient-text">Production</span></h1>
+      <p class="blogs-sub">${blogs.length} hand-picked engineering posts from ${companies} companies running Go at scale. Read how the industry actually uses what you're learning.</p>
+    </div>
+
+    <div class="blogs-toolbar">
+      <div class="blogs-chips">
+        ${categories.map(c => `
+          <button class="blog-chip${BLOGS_STATE.category === c ? ' active' : ''}"
+            data-cat="${escapeAttr(c)}"
+            ${c !== 'All' ? `style="--chip-color:${BLOG_CATEGORY_COLORS[c] || 'var(--accent)'}"` : ''}>
+            ${escapeHtml(c)}
+            <span class="blog-chip-count">${c === 'All' ? blogs.length : blogs.filter(b => b.category === c).length}</span>
+          </button>`).join('')}
+      </div>
+      <div class="blogs-search">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="blogs-search-input" placeholder="Filter by company, title, or tag…" value="${escapeAttr(BLOGS_STATE.query)}" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
+
+    ${visible.length === 0
+      ? `<div class="blogs-empty">No posts match. Try a different filter.</div>`
+      : `<div class="blogs-grid">
+          ${visible.map(b => {
+            const color = BLOG_CATEGORY_COLORS[b.category] || 'var(--accent)';
+            return `
+            <a class="blog-card" href="${escapeAttr(b.url)}" target="_blank" rel="noopener noreferrer" style="--blog-color:${color}">
+              <div class="blog-card-top">
+                <span class="blog-monogram">${escapeHtml(b.company.charAt(0).toUpperCase())}</span>
+                <div class="blog-card-co">
+                  <span class="blog-company">${escapeHtml(b.company)}</span>
+                  <span class="blog-cat">${escapeHtml(b.category)}</span>
+                </div>
+                <svg class="blog-ext" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              </div>
+              <div class="blog-card-title">${escapeHtml(b.title)}</div>
+              <div class="blog-card-summary">${escapeHtml(b.summary || '')}</div>
+              <div class="blog-card-foot">
+                ${(b.tags || []).slice(0, 3).map(t => `<span class="blog-tag">${escapeHtml(t)}</span>`).join('')}
+                ${b.year ? `<span class="blog-year">${escapeHtml(b.year)}</span>` : ''}
+              </div>
+            </a>`;
+          }).join('')}
+        </div>`}
+  `;
+
+  // Wire filters
+  body.querySelectorAll('.blog-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      BLOGS_STATE.category = chip.dataset.cat;
+      renderBlogsView();
+    });
+  });
+  const search = document.getElementById('blogs-search-input');
+  if (search) {
+    search.addEventListener('input', e => {
+      BLOGS_STATE.query = e.target.value;
+      const pos = e.target.selectionStart;
+      renderBlogsView();
+      const again = document.getElementById('blogs-search-input');
+      if (again) { again.focus(); again.setSelectionRange(pos, pos); }
+    });
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════
